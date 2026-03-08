@@ -1,0 +1,16 @@
+{
+  "meta": {
+    "out_prefix": "TAoil_TA605",
+    "input_csv": "/Users/shiyu/.openclaw/workspace/volresearch/timeseries/scoil/TAoil.csv",
+    "underlying": "TA605",
+    "expiry_date": "2026-04-13",
+    "spread_limit": 25.0,
+    "multiplier": 5.0,
+    "rows_out": 2326216,
+    "tick_est": 1.0,
+    "parquet_path": "/Users/shiyu/.openclaw/workspace/volresearch/timeseries/analysis/TAoil_TA605_option_iv_vega_traded_v4.parquet"
+  },
+  "threshold_q99": 1867.515025300169,
+  "event_count": 444,
+  "event_rate": 0.002442244224422442
+}

@@ -1,0 +1,8 @@
+{
+  "generated": [
+    "iv_vega_futures_report.md",
+    "iv_vega_futures_exec_summary.md",
+    "tables/sc25_sc2604_top_contract_iv_fut_stats.csv"
+  ],
+  "note": "sc统计采用5s bar, 30s等效"
+}

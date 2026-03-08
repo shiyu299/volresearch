@@ -1,0 +1,64 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Python env/cache
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# OpenClaw runtime/meta
+.openclaw/
+
+# Large data artifacts (exclude)
+*.parquet
+*.feather
+*.h5
+*.hdf5
+*.npz
+*.npy
+*.pkl
+*.pickle
+*.csv
+*.tsv
+*.jsonl
+*.gz
+*.zip
+*.7z
+*.xz
+*.zst
+*.tar
+*.sqlite
+*.db
+
+# Project data/output folders
+data/
+datasets/
+outputs/
+cache/
+logs/
+artifacts/
+results/
+
+# Explicit heavy dirs/artifacts in this repo
+timeseries/.venv/
+timeseries/**/raw/
+timeseries/**/cache/
+timeseries/iv_inspector_refactor_toggle/st_env/
+timeseries/iv_inspector_refactor_toggle/iv_inspector_refactor/
+timeseries/iv_inspector_refactor_toggle/*.rar
+timeseries/iv_inspector_refactor_toggle/*.rtf
+factor/**/raw/
+factor/**/cache/
+
+# Generated media
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
