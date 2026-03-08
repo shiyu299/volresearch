@@ -96,21 +96,21 @@ def build_factor_base_frame(df_raw: pd.DataFrame, symbol: str, base_rule: str) -
         out["iv_chg_20s_abs"] = np.nan
         out["iv_chg_60s"] = np.nan
 
-    # 30分钟滚动回归 beta: iv_chg_10s ~ beta * fut_ret_10s
-    x = out.get("fut_ret_10s", pd.Series(np.nan, index=out.index)).astype(float)
-    y = out.get("iv_chg_10s", pd.Series(np.nan, index=out.index)).astype(float)
+    # 30分钟滚动回归 beta: fut_ret_10s ~ beta * iv_chg_10s （按你要求改为 f = beta * iv）
+    x = out.get("iv_chg_10s", pd.Series(np.nan, index=out.index)).astype(float)
+    y = out.get("fut_ret_10s", pd.Series(np.nan, index=out.index)).astype(float)
     cov_xy = y.rolling(win30m, min_periods=max(30, win10)).cov(x)
     var_x = x.rolling(win30m, min_periods=max(30, win10)).var()
     beta_30m = cov_xy / var_x.replace(0.0, np.nan)
-    out["iv_f_beta_30m"] = beta_30m.replace([np.inf, -np.inf], np.nan)
+    out["f_iv_beta_30m"] = beta_30m.replace([np.inf, -np.inf], np.nan)
 
-    pred_iv_chg_10s = out["iv_f_beta_30m"] * out["fut_ret_10s"]
-    actual_dir = np.sign(out["iv_chg_10s"])
-    pred_dir = np.sign(pred_iv_chg_10s)
+    pred_fut_ret_10s = out["f_iv_beta_30m"] * out["iv_chg_10s"]
+    actual_dir = np.sign(out["fut_ret_10s"])
+    pred_dir = np.sign(pred_fut_ret_10s)
     mismatch = (actual_dir * pred_dir) < 0
     out["iv_f_dir_div_10s_30m"] = np.where(
         mismatch,
-        (out["iv_chg_10s"] - pred_iv_chg_10s).abs(),
+        (out["fut_ret_10s"] - pred_fut_ret_10s).abs(),
         0.0,
     )
 
