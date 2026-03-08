@@ -314,13 +314,7 @@ def compute_if_needed(df_raw: pd.DataFrame, params: dict, submitted: bool, cache
     if not need:
         return
 
-    ser, bar_ser, debug_df, details_df = make_iv_and_bar_series(
-        df_raw,
-        params["base_rule"],
-        params["n"],
-        params["otm_atm_only"],
-        params["use_vega_weight"],
-        params["use_abs_bar"],
+    call_kwargs = dict(
         iv_fill_mode=params["iv_fill_mode"],
         fut_move_threshold=float(params["fut_move_threshold"]),
         pool_refresh_seconds=int(params["pool_refresh_seconds"]),
@@ -328,6 +322,32 @@ def compute_if_needed(df_raw: pd.DataFrame, params: dict, submitted: bool, cache
         min_valid_n=int(params["min_valid_n"]),
         is_ultra=False,
     )
+
+    try:
+        ser, bar_ser, debug_df, details_df = make_iv_and_bar_series(
+            df_raw,
+            params["base_rule"],
+            params["n"],
+            params["otm_atm_only"],
+            params["use_vega_weight"],
+            params["use_abs_bar"],
+            **call_kwargs,
+        )
+    except TypeError as e:
+        # 兼容旧版 aggregation.py（不支持 pool_refresh_fut_move 参数）
+        if "pool_refresh_fut_move" in str(e):
+            call_kwargs.pop("pool_refresh_fut_move", None)
+            ser, bar_ser, debug_df, details_df = make_iv_and_bar_series(
+                df_raw,
+                params["base_rule"],
+                params["n"],
+                params["otm_atm_only"],
+                params["use_vega_weight"],
+                params["use_abs_bar"],
+                **call_kwargs,
+            )
+        else:
+            raise
 
     if ser is None or ser.empty:
         st.warning("无法生成基础序列（过滤太严或字段缺失）。")
