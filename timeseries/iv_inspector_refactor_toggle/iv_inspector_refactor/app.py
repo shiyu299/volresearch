@@ -16,6 +16,57 @@ from iv_inspector.factors import list_factors, build_factor_base_frame, evaluate
 st.set_page_config(layout="wide")
 
 
+def _estimate_option_strike_step(df: pd.DataFrame) -> float:
+    """
+    Estimate consecutive strike gap from option rows.
+    Return NaN if unavailable.
+    """
+    if df is None or df.empty or "K" not in df.columns:
+        return np.nan
+
+    dfo = df.copy()
+    if "is_option" in dfo.columns:
+        dfo = dfo[dfo["is_option"] == True]
+    if dfo.empty:
+        return np.nan
+
+    k = pd.to_numeric(dfo["K"], errors="coerce").dropna().unique()
+    if len(k) < 2:
+        return np.nan
+    k = np.sort(k.astype(float))
+    diffs = np.diff(k)
+    diffs = diffs[np.isfinite(diffs) & (diffs > 1e-12)]
+    if diffs.size == 0:
+        return np.nan
+
+    # Use the most common positive strike gap as default.
+    gap_counts = pd.Series(np.round(diffs, 8)).value_counts()
+    if gap_counts.empty:
+        return np.nan
+    return float(gap_counts.index[0])
+
+
+def _series_stats(s: pd.Series) -> dict:
+    s = pd.to_numeric(s, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    if s.empty:
+        return {
+            "min": np.nan,
+            "max": np.nan,
+            "q25": np.nan,
+            "q50": np.nan,
+            "q75": np.nan,
+            "q90": np.nan,
+        }
+    return {
+        "min": float(s.min()),
+        "max": float(s.max()),
+        "q25": float(s.quantile(0.25)),
+        "q50": float(s.quantile(0.50)),
+        "q75": float(s.quantile(0.75)),
+        "q90": float(s.quantile(0.90)),
+    }
+
+
 def apply_no_blank_time_axis(fig):
     """Compress long no-trade/no-update gaps by rendering x-axis as category."""
     fig.update_xaxes(type="category")
@@ -89,6 +140,17 @@ def sidebar_params():
         files = list_data_files()
         fp = st.selectbox("选择数据文件（data/ 下）", files) if files else None
 
+        strike_gap_suggest = np.nan
+        if fp:
+            fp_for_hint = fp
+            if not Path(fp_for_hint).is_absolute():
+                fp_for_hint = str((Path.cwd() / fp_for_hint).resolve())
+            try:
+                df_hint = load_data(fp_for_hint)
+                strike_gap_suggest = _estimate_option_strike_step(df_hint)
+            except Exception:
+                strike_gap_suggest = np.nan
+
         base_rule = st.selectbox("基础频率（生成iv序列粒度）", ["250ms", "500ms", "1S", "2S", "5S"], index=2)
         kline_rule = st.selectbox("展示周期（细周期折线，粗周期K线）", ["2S", "5S", "10S", "30S", "1min", "5min"], index=4)
 
@@ -129,6 +191,29 @@ def sidebar_params():
             )
         )
 
+        # Initialize / refresh default when selected file changes.
+        fp_state_key = "_pool_refresh_fut_move_fp"
+        val_state_key = "pool_refresh_fut_move_input"
+        if st.session_state.get(fp_state_key) != fp:
+            if np.isfinite(strike_gap_suggest) and strike_gap_suggest > 0:
+                st.session_state[val_state_key] = float(strike_gap_suggest)
+            elif val_state_key not in st.session_state:
+                st.session_state[val_state_key] = 0.0
+            st.session_state[fp_state_key] = fp
+        elif val_state_key not in st.session_state:
+            st.session_state[val_state_key] = float(strike_gap_suggest) if (np.isfinite(strike_gap_suggest) and strike_gap_suggest > 0) else 0.0
+
+        pool_refresh_fut_move = float(
+            st.number_input(
+                "候选池刷新价差阈值（|ΔF|>=阈值触发刷新，0=关闭）",
+                key=val_state_key,
+                step=0.1,
+                min_value=0.0,
+            )
+        )
+        if np.isfinite(strike_gap_suggest) and strike_gap_suggest > 0:
+            st.caption(f"建议默认值（相邻执行价差）: {strike_gap_suggest:g}")
+
         min_valid_n = int(
             st.number_input(
                 "最少有效合约数（少于此值则不更新IV，沿用前值）",
@@ -152,6 +237,7 @@ def sidebar_params():
         iv_fill_mode=iv_fill_mode,
         fut_move_threshold=fut_move_threshold,
         pool_refresh_seconds=pool_refresh_seconds,
+        pool_refresh_fut_move=pool_refresh_fut_move,
         min_valid_n=min_valid_n,
         use_abs_bar=use_abs_bar,
     )
@@ -169,6 +255,7 @@ def signature(params: dict):
         params["iv_fill_mode"],
         float(params["fut_move_threshold"]),
         int(params["pool_refresh_seconds"]),
+        float(params["pool_refresh_fut_move"]),
         int(params["min_valid_n"]),
         params["use_abs_bar"],
     )
@@ -196,6 +283,7 @@ def compute_if_needed(df_raw: pd.DataFrame, params: dict, submitted: bool, cache
         iv_fill_mode=params["iv_fill_mode"],
         fut_move_threshold=float(params["fut_move_threshold"]),
         pool_refresh_seconds=int(params["pool_refresh_seconds"]),
+        pool_refresh_fut_move=float(params["pool_refresh_fut_move"]),
         min_valid_n=int(params["min_valid_n"]),
         is_ultra=False,
     )
@@ -264,8 +352,154 @@ def compute_if_needed(df_raw: pd.DataFrame, params: dict, submitted: bool, cache
     )
 
 
-def render_charts(cache: dict):
+def _build_selected_agg_factor_input(df_raw: pd.DataFrame, cache: dict, params: dict) -> pd.DataFrame:
+    """
+    Build a synthetic frame for factor evaluation on "selected contracts aggregate".
+    Keep factors.py unchanged by adapting input at app layer.
+    """
+    details_df = cache.get("details_df")
+    base_iv_ser = cache.get("ser")
+    if details_df is None or getattr(details_df, "empty", True) or base_iv_ser is None or base_iv_ser.empty:
+        return pd.DataFrame()
+
+    dfx = df_raw.copy()
+    dfx["dt_exch"] = pd.to_datetime(dfx["dt_exch"], errors="coerce")
+    dfx = dfx.dropna(subset=["dt_exch"]).sort_values("dt_exch")
+    dfx["_bucket"] = dfx["dt_exch"].dt.floor(params["base_rule"])
+
+    selected = details_df[["dt", "symbol"]].dropna().drop_duplicates().copy()
+    selected = selected.rename(columns={"dt": "_bucket"})
+    selected["_bucket"] = pd.to_datetime(selected["_bucket"], errors="coerce")
+    selected = selected.dropna(subset=["_bucket", "symbol"])
+    if selected.empty:
+        return pd.DataFrame()
+
+    # Per (bucket, symbol) keep latest quote, then aggregate across selected symbols in bucket.
+    opt_rows = dfx.merge(selected, on=["_bucket", "symbol"], how="inner")
+    if opt_rows.empty:
+        return pd.DataFrame()
+    opt_last = (
+        opt_rows.sort_values("dt_exch")
+        .groupby(["_bucket", "symbol"], as_index=False)
+        .tail(1)
+    )
+
+    if "traded_vega" in opt_last.columns:
+        opt_last["_tv_for_factor"] = pd.to_numeric(opt_last["traded_vega"], errors="coerce").fillna(0.0)
+    elif "traded_vega_signed" in opt_last.columns:
+        # fallback: aggregate activity by absolute signed vega
+        opt_last["_tv_for_factor"] = pd.to_numeric(opt_last["traded_vega_signed"], errors="coerce").abs().fillna(0.0)
+    else:
+        opt_last["_tv_for_factor"] = 0.0
+
+    opt_last["_spread_for_factor"] = pd.to_numeric(opt_last.get("spread"), errors="coerce")
+    opt_agg = opt_last.groupby("_bucket", as_index=False).agg(
+        traded_vega=("_tv_for_factor", "sum"),
+        spread=("_spread_for_factor", "median"),
+    )
+
+    # IV in factor base should match main index series (selected pool weighted index).
+    iv_base = base_iv_ser.rename("iv").reset_index()
+    iv_base.columns = ["_bucket", "iv"]
+    iv_base["_bucket"] = pd.to_datetime(iv_base["_bucket"], errors="coerce")
+
+    opt_base = iv_base.merge(opt_agg, on="_bucket", how="left")
+    opt_base["traded_vega"] = opt_base["traded_vega"].fillna(0.0)
+    opt_base["symbol"] = "__AGG_SELECTED__"
+    opt_base["is_option"] = True
+    opt_base["is_future"] = False
+    opt_base = opt_base.rename(columns={"_bucket": "dt_exch"})
+
+    fut = dfx[dfx.get("is_future", False) == True].copy() if "is_future" in dfx.columns else pd.DataFrame()
+    if fut.empty:
+        fut_base = pd.DataFrame(columns=["dt_exch", "symbol", "is_option", "is_future", "F_used", "d_volume"])
+    else:
+        agg_map = {"F_used": ("F_used", "last")}
+        if "d_volume" in fut.columns:
+            agg_map["d_volume"] = ("d_volume", "sum")
+        fut_base = fut.groupby("_bucket", as_index=False).agg(**agg_map).rename(columns={"_bucket": "dt_exch"})
+        if "d_volume" not in fut_base.columns:
+            fut_base["d_volume"] = 0.0
+        fut_base["symbol"] = "__FUT_BASE__"
+        fut_base["is_option"] = False
+        fut_base["is_future"] = True
+
+    out = pd.concat(
+        [
+            opt_base[["dt_exch", "symbol", "is_option", "is_future", "iv", "traded_vega", "spread"]],
+            fut_base[["dt_exch", "symbol", "is_option", "is_future", "F_used", "d_volume"]],
+        ],
+        ignore_index=True,
+        sort=False,
+    )
+    out = out.sort_values("dt_exch").reset_index(drop=True)
+    return out
+
+
+def _compute_main_chart_factor_results(df_raw: pd.DataFrame, cache: dict, params: dict, selected_factor_ids: list[str], threshold_mode: str, q: float, op: str, abs_value: Optional[float]):
+    ohlc = cache.get("ohlc", pd.DataFrame())
+    idx = ohlc.index if ohlc is not None and not ohlc.empty else pd.DatetimeIndex([])
+    if len(idx) == 0 or not selected_factor_ids:
+        return {}, pd.DataFrame()
+
+    factor_input = _build_selected_agg_factor_input(df_raw, cache, params)
+    if factor_input.empty:
+        return {}, pd.DataFrame()
+
+    factor_base = build_factor_base_frame(
+        df_raw=factor_input,
+        symbol="__AGG_SELECTED__",
+        base_rule=params["base_rule"],
+    )
+    if factor_base is None or factor_base.empty:
+        return {}, pd.DataFrame()
+
+    factor_results = {}
+    for fid in selected_factor_ids:
+        _signal, _trigger_base, _thr = evaluate_factor_trigger(
+            factor_base,
+            fid,
+            mode=threshold_mode,
+            q=q,
+            op=op,
+            value=abs_value,
+        )
+        _trigger = _trigger_base.resample(params["kline_rule"]).max() if not _trigger_base.empty else pd.Series(False, index=idx)
+        _trigger = _trigger.reindex(idx).fillna(False)
+        factor_results[fid] = {"signal": _signal, "trigger": _trigger, "threshold": _thr}
+
+    return factor_results, factor_base
+
+
+def render_charts(df_raw: pd.DataFrame, params: dict, cache: dict):
     st.markdown("### 图表")
+
+    # Main-chart factor controls (selected contracts aggregate)
+    factors = list_factors()
+    factor_keys = list(factors.keys())
+    factor_labels = [factors[k].label for k in factor_keys]
+    label_to_id = {factors[k].label: k for k in factor_keys}
+
+    selected_labels = st.multiselect(
+        "主图触发因子（选取合约加总口径，可多选）",
+        options=factor_labels,
+        default=factor_labels[:1],
+        key="main_factor_multi_labels",
+    )
+    selected_factor_ids = [label_to_id[x] for x in selected_labels if x in label_to_id]
+
+    c1, c2, c3 = st.columns([1, 1, 1])
+    with c1:
+        threshold_mode = st.selectbox("主图阈值模式", ["quantile", "absolute"], index=0, key="main_factor_threshold_mode")
+    with c2:
+        if threshold_mode == "quantile":
+            q = float(st.slider("主图分位数 q（多因子统一）", 0.50, 0.999, 0.95, 0.005, key="main_factor_q"))
+            abs_value = None
+        else:
+            q = 0.95
+            abs_value = float(st.number_input("主图绝对阈值（多因子统一）", value=0.0, step=0.1, key="main_factor_abs_value"))
+    with c3:
+        op = st.selectbox("主图触发方向", [">=", "<="], index=0, key="main_factor_op")
 
     fig = build_fut_iv_vega_stack_figure(
         cache["fut_ser"],
@@ -273,6 +507,38 @@ def render_charts(cache: dict):
         cache["bar_agg"],
         cache["bar_signed_agg"],
     )
+
+    factor_results, _factor_base = _compute_main_chart_factor_results(
+        df_raw=df_raw,
+        cache=cache,
+        params=params,
+        selected_factor_ids=selected_factor_ids,
+        threshold_mode=threshold_mode,
+        q=q,
+        op=op,
+        abs_value=abs_value,
+    )
+
+    idx = cache["ohlc"].index
+    for fid in selected_factor_ids:
+        trig_ser = factor_results.get(fid, {}).get("trigger", pd.Series(False, index=idx))
+        trig_idx = idx[trig_ser.values]
+        if len(trig_idx) == 0:
+            continue
+        y_ref = cache["ohlc"].loc[trig_idx, "high"].astype(float)
+        y_ref = y_ref.fillna(cache["ohlc"]["close"]).ffill()
+        fig.add_trace(
+            go.Scatter(
+                x=trig_idx,
+                y=y_ref,
+                mode="markers",
+                marker=dict(symbol="triangle-up", size=14, color="#1f77ff", line=dict(color="#0b3d91", width=1.0)),
+                name=f"主图触发:{factors[fid].label}",
+                hovertemplate=f"主图因子: {factors[fid].label}<br>时间: %{{x}}<extra></extra>",
+            ),
+            row=1, col=1, secondary_y=False,
+        )
+
     fig = apply_no_blank_time_axis(fig)
 
     PLOTLY_CONFIG = dict(
@@ -281,6 +547,29 @@ def render_charts(cache: dict):
         modeBarButtonsToAdd=["autoScale2d", "resetScale2d"],  # 你要的方案A：手动Y轴满屏
     )
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+
+    if selected_factor_ids:
+        st.caption(f"主图阈值模式：{threshold_mode}｜触发方向：{op}")
+        sum_rows = []
+        for fid in selected_factor_ids:
+            tser = factor_results.get(fid, {}).get("trigger", pd.Series(False, index=idx))
+            thr = factor_results.get(fid, {}).get("threshold", np.nan)
+            sig_stats = _series_stats(factor_results.get(fid, {}).get("signal", pd.Series(dtype=float)))
+            cnt = int(tser.sum()) if len(tser) else 0
+            sum_rows.append(
+                {
+                    "factor": factors[fid].label,
+                    "threshold": thr,
+                    "trigger_count": cnt,
+                    "min": sig_stats["min"],
+                    "max": sig_stats["max"],
+                    "q25": sig_stats["q25"],
+                    "q50": sig_stats["q50"],
+                    "q75": sig_stats["q75"],
+                    "q90": sig_stats["q90"],
+                }
+            )
+        st.dataframe(pd.DataFrame(sum_rows), use_container_width=True, height=160)
 
 
 
@@ -428,7 +717,7 @@ def render_single_contract_iv_chart(df_raw: pd.DataFrame, params: dict, main_tim
         )
         _trigger = _trigger_base.resample(params["kline_rule"]).max() if not _trigger_base.empty else pd.Series(False, index=idx)
         _trigger = _trigger.reindex(idx).fillna(False)
-        factor_results[fid] = {"trigger": _trigger, "threshold": _thr}
+        factor_results[fid] = {"signal": _signal, "trigger": _trigger, "threshold": _thr}
 
     # Vega 柱：统一画绝对值；颜色表示方向（正=红，负=绿）
     vega_sign = vega_ser.copy()
@@ -515,11 +804,18 @@ def render_single_contract_iv_chart(df_raw: pd.DataFrame, params: dict, main_tim
     for fid in selected_factor_ids:
         tser = factor_results.get(fid, {}).get("trigger", pd.Series(False, index=idx))
         thr = factor_results.get(fid, {}).get("threshold", np.nan)
+        sig_stats = _series_stats(factor_results.get(fid, {}).get("signal", pd.Series(dtype=float)))
         cnt = int(tser.sum()) if len(tser) else 0
         sum_rows.append({
             "factor": factors[fid].label,
             "threshold": thr,
             "trigger_count": cnt,
+            "min": sig_stats["min"],
+            "max": sig_stats["max"],
+            "q25": sig_stats["q25"],
+            "q50": sig_stats["q50"],
+            "q75": sig_stats["q75"],
+            "q90": sig_stats["q90"],
         })
         if cnt > 0:
             tdf = pd.DataFrame({"factor": factors[fid].label, "trigger_time": idx[tser.values]})
@@ -642,7 +938,7 @@ def main():
     if ("ser" not in cache) or cache.get("ser") is None or cache.get("ser").empty:
         return
 
-    render_charts(cache)
+    render_charts(df_raw, params, cache)
     render_single_contract_iv_chart(df_raw, params, main_time_index=cache.get("ohlc", pd.DataFrame()).index)
     render_debug_table(cache)
     render_drilldown(df_raw, params)

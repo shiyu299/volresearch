@@ -123,6 +123,7 @@ def make_iv_and_bar_series(
     iv_fill_mode: str = "state_adjust",  # "state_adjust" | "ffill" | "quote_only"
     fut_move_threshold: float = 0.0,
     pool_refresh_seconds: int = 120,
+    pool_refresh_fut_move: float = 0.0,
     min_valid_n: int = 4,
     is_ultra: bool = False,
 ) -> Tuple[pd.Series, pd.Series, pd.DataFrame, Optional[pd.DataFrame]]:
@@ -202,6 +203,7 @@ def make_iv_and_bar_series(
     pool_refresh_seconds = int(pool_refresh_seconds) if pool_refresh_seconds is not None else 0
     pool_refresh_td = pd.Timedelta(seconds=max(pool_refresh_seconds, 0))
     next_refresh_time = None
+    last_pool_f = np.nan
     pool_syms: List[str] = []
     prev_bt = None
     prev_sess = None
@@ -228,9 +230,17 @@ def make_iv_and_bar_series(
             )
             continue
 
-        if (next_refresh_time is None) or (pool_refresh_seconds == 0) or (bt >= next_refresh_time):
+        refresh_by_time = (next_refresh_time is None) or (pool_refresh_seconds == 0) or (bt >= next_refresh_time)
+        refresh_by_f_move = (
+            np.isfinite(float(pool_refresh_fut_move))
+            and float(pool_refresh_fut_move) > 0.0
+            and np.isfinite(float(last_pool_f))
+            and abs(float(f_now) - float(last_pool_f)) >= float(pool_refresh_fut_move)
+        )
+        if refresh_by_time or refresh_by_f_move:
             pool_syms = _pick_pool_symbols(meta, float(f_now), int(n), bool(otm_atm_only))
             next_refresh_time = bt + pool_refresh_td if pool_refresh_seconds > 0 else pd.Timestamp.max
+            last_pool_f = float(f_now)
 
         used = []
         used_vega = []
@@ -309,6 +319,7 @@ def make_iv_and_bar_series(
                 iv_fill_mode=iv_fill_mode,
                 fut_move_threshold=float(fut_move_threshold),
                 pool_refresh_seconds=int(pool_refresh_seconds),
+                pool_refresh_fut_move=float(pool_refresh_fut_move),
                 min_valid_n=int(min_contracts_required),
             )
         )
