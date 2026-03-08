@@ -108,6 +108,20 @@ def _compute_ic_ir_from_series(factor_ser: pd.Series, iv_close_ser: pd.Series) -
     return {"ic": ic, "ir": ir, "n_obs": int(len(df)), "n_bins": int(len(dics))}
 
 
+def _safe_resample_signal(sig_raw: pd.Series, rule: str, target_idx: pd.DatetimeIndex) -> pd.Series:
+    s = pd.to_numeric(sig_raw, errors="coerce")
+    if not isinstance(getattr(s, "index", None), pd.DatetimeIndex):
+        return pd.Series(np.nan, index=target_idx, dtype=float)
+    if len(s) == 0:
+        return pd.Series(np.nan, index=target_idx, dtype=float)
+    s = s.copy()
+    s.index = pd.to_datetime(s.index, errors="coerce")
+    s = s[~s.index.isna()]
+    if s.empty:
+        return pd.Series(np.nan, index=target_idx, dtype=float)
+    return s.resample(rule).last().reindex(target_idx)
+
+
 def apply_no_blank_time_axis(fig):
     """Compress long no-trade/no-update gaps by rendering x-axis as category."""
     fig.update_xaxes(type="category")
@@ -646,7 +660,7 @@ def render_charts(df_raw: pd.DataFrame, params: dict, cache: dict):
             thr = factor_results.get(fid, {}).get("threshold", np.nan)
             sig_raw = factor_results.get(fid, {}).get("signal", pd.Series(dtype=float))
             sig_stats = _series_stats(sig_raw)
-            sig_kline = pd.to_numeric(sig_raw, errors="coerce").resample(params["kline_rule"]).last().reindex(idx)
+            sig_kline = _safe_resample_signal(sig_raw, params["kline_rule"], idx)
             icir = _compute_ic_ir_from_series(sig_kline, cache["ohlc"]["close"])
             cnt = int(tser.sum()) if len(tser) else 0
             sum_rows.append(
@@ -907,7 +921,7 @@ def render_single_contract_iv_chart(df_raw: pd.DataFrame, params: dict, main_tim
         thr = factor_results.get(fid, {}).get("threshold", np.nan)
         sig_raw = factor_results.get(fid, {}).get("signal", pd.Series(dtype=float))
         sig_stats = _series_stats(sig_raw)
-        sig_kline = pd.to_numeric(sig_raw, errors="coerce").resample(params["kline_rule"]).last().reindex(idx)
+        sig_kline = _safe_resample_signal(sig_raw, params["kline_rule"], idx)
         icir = _compute_ic_ir_from_series(sig_kline, ohlc_single["close"])
         cnt = int(tser.sum()) if len(tser) else 0
         sum_rows.append({

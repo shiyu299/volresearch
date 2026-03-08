@@ -76,7 +76,6 @@ def _read_csv_fast(path: str) -> pd.DataFrame:
             return pd.read_csv(path, low_memory=False)
 
 
-@st.cache_data
 def load_data(path: str) -> pd.DataFrame:
     path = (path or "").strip().strip('"').strip("'")
     if not path:
