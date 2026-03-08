@@ -72,20 +72,47 @@ def build_factor_base_frame(df_raw: pd.DataFrame, symbol: str, base_rule: str) -
     if out.empty:
         return out
 
+    win10 = _rolling_bins_for_seconds(base_rule, 10)
+    win20 = _rolling_bins_for_seconds(base_rule, 20)
     win60 = _rolling_bins_for_seconds(base_rule, 60)
+    win30m = _rolling_bins_for_seconds(base_rule, 30 * 60)
 
     # derived common fields
     if "fut_price" in out.columns:
+        out["fut_ret_10s"] = out["fut_price"].pct_change(win10)
         out["fut_ret_60s"] = out["fut_price"].pct_change(win60)
         out["fut_dvol_60s"] = out["fut_dvol"].rolling(win60).sum() if "fut_dvol" in out.columns else np.nan
     else:
+        out["fut_ret_10s"] = np.nan
         out["fut_ret_60s"] = np.nan
         out["fut_dvol_60s"] = np.nan
 
     if "iv" in out.columns:
+        out["iv_chg_10s"] = out["iv"].diff(win10)
+        out["iv_chg_20s_abs"] = out["iv"].diff(win20).abs()
         out["iv_chg_60s"] = out["iv"].diff(win60)
     else:
+        out["iv_chg_10s"] = np.nan
+        out["iv_chg_20s_abs"] = np.nan
         out["iv_chg_60s"] = np.nan
+
+    # 30分钟滚动回归 beta: iv_chg_10s ~ beta * fut_ret_10s
+    x = out.get("fut_ret_10s", pd.Series(np.nan, index=out.index)).astype(float)
+    y = out.get("iv_chg_10s", pd.Series(np.nan, index=out.index)).astype(float)
+    cov_xy = y.rolling(win30m, min_periods=max(30, win10)).cov(x)
+    var_x = x.rolling(win30m, min_periods=max(30, win10)).var()
+    beta_30m = cov_xy / var_x.replace(0.0, np.nan)
+    out["iv_f_beta_30m"] = beta_30m.replace([np.inf, -np.inf], np.nan)
+
+    pred_iv_chg_10s = out["iv_f_beta_30m"] * out["fut_ret_10s"]
+    actual_dir = np.sign(out["iv_chg_10s"])
+    pred_dir = np.sign(pred_iv_chg_10s)
+    mismatch = (actual_dir * pred_dir) < 0
+    out["iv_f_dir_div_10s_30m"] = np.where(
+        mismatch,
+        (out["iv_chg_10s"] - pred_iv_chg_10s).abs(),
+        0.0,
+    )
 
     out["abs_traded_vega"] = out.get("traded_vega", 0.0).abs()
     out["opt_spread_60s"] = out.get("opt_spread", np.nan).rolling(win60).median()
@@ -110,6 +137,14 @@ def _factor_no_trade_move_60(df: pd.DataFrame) -> pd.Series:
 def _factor_iv_f_div_60_abs(df: pd.DataFrame) -> pd.Series:
     s = df.get("iv_f_div_60", pd.Series(index=df.index, dtype=float))
     return s.abs()
+
+
+def _factor_iv_f_dir_div_10s_30m(df: pd.DataFrame) -> pd.Series:
+    return df.get("iv_f_dir_div_10s_30m", pd.Series(index=df.index, dtype=float))
+
+
+def _factor_iv_chg_20s_abs(df: pd.DataFrame) -> pd.Series:
+    return df.get("iv_chg_20s_abs", pd.Series(index=df.index, dtype=float))
 
 
 FACTOR_REGISTRY: Dict[str, FactorDef] = {
@@ -143,6 +178,22 @@ FACTOR_REGISTRY: Dict[str, FactorDef] = {
         description="60秒IV-F背离绝对值",
         compute=_factor_iv_f_div_60_abs,
         default_q=0.85,
+        default_op=">=",
+    ),
+    "iv_f_dir_div_10s_30m": FactorDef(
+        factor_id="iv_f_dir_div_10s_30m",
+        label="iv_f_dir_div_10s_30m",
+        description="30分钟滚动回归下，10秒IV与期货方向背离强度",
+        compute=_factor_iv_f_dir_div_10s_30m,
+        default_q=0.90,
+        default_op=">=",
+    ),
+    "iv_chg_20s_abs": FactorDef(
+        factor_id="iv_chg_20s_abs",
+        label="abs(iv_chg_20s)",
+        description="20秒IV变动绝对值",
+        compute=_factor_iv_chg_20s_abs,
+        default_q=0.90,
         default_op=">=",
     ),
 }
