@@ -467,14 +467,18 @@ def render_single_contract_iv_chart(df_raw: pd.DataFrame, params: dict, main_tim
         thr = factor_results.get(fid, {}).get("threshold", np.nan)
 
         sig_show = sig_ser.where(trig_ser)
-        if sig_show.notna().sum() == 0:
+        mask = sig_show.notna()
+        if mask.sum() == 0:
             continue
+
+        x_sig = idx[mask.values]
+        y_sig = sig_show[mask].values
 
         c = factor_colors[i % len(factor_colors)]
         fig.add_trace(
             go.Bar(
-                x=idx,
-                y=sig_show.values,
+                x=x_sig,
+                y=y_sig,
                 name=f"指标值:{factors[fid].label}",
                 marker_color=c,
                 opacity=0.32,
