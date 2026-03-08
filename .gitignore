@@ -50,7 +50,12 @@ timeseries/.venv/
 timeseries/**/raw/
 timeseries/**/cache/
 timeseries/iv_inspector_refactor_toggle/st_env/
-timeseries/iv_inspector_refactor_toggle/iv_inspector_refactor/
+timeseries/iv_inspector_refactor_toggle/iv_inspector_refactor/.git/
+timeseries/iv_inspector_refactor_toggle/iv_inspector_refactor/.git_inner_backup/
+timeseries/iv_inspector_refactor_toggle/iv_inspector_refactor/.venv/
+timeseries/iv_inspector_refactor_toggle/iv_inspector_refactor/__pycache__/
+timeseries/iv_inspector_refactor_toggle/iv_inspector_refactor/data/
+timeseries/iv_inspector_refactor_toggle/iv_inspector_refactor_副本/
 timeseries/iv_inspector_refactor_toggle/*.rar
 timeseries/iv_inspector_refactor_toggle/*.rtf
 factor/**/raw/
