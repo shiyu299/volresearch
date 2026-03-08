@@ -75,6 +75,7 @@ def build_factor_base_frame(df_raw: pd.DataFrame, symbol: str, base_rule: str) -
 
     win5 = _rolling_bins_for_seconds(base_rule, 5)
     win10 = _rolling_bins_for_seconds(base_rule, 10)
+    win10m = _rolling_bins_for_seconds(base_rule, 10 * 60)
     win20 = _rolling_bins_for_seconds(base_rule, 20)
     win60 = _rolling_bins_for_seconds(base_rule, 60)
     win30m = _rolling_bins_for_seconds(base_rule, 30 * 60)
@@ -121,6 +122,15 @@ def build_factor_base_frame(df_raw: pd.DataFrame, symbol: str, base_rule: str) -
 
     out["fair_dIV_5s"] = out["iv_f_beta_30m"] * out["fut_dF_5s"]
     out["vcr_divergence"] = out["iv_dIV_5s"] - out["fair_dIV_5s"]
+    # reversal condition:
+    # (Ft - Ft-10s) * (Ft-10s - Ft-10min) < 0
+    out["fut_dF_10s"] = out.get("fut_price", pd.Series(np.nan, index=out.index)).diff(win10)
+    out["fut_dF_10m_from_10s"] = (
+        out.get("fut_price", pd.Series(np.nan, index=out.index)).shift(win10) -
+        out.get("fut_price", pd.Series(np.nan, index=out.index)).shift(win10m)
+    )
+    out["fut_reversal_10s_10m"] = (out["fut_dF_10s"] * out["fut_dF_10m_from_10s"]) < 0
+    out["vcr_divergence_reversal"] = out["vcr_divergence"].where(out["fut_reversal_10s_10m"])
 
     div_roll_std = out["vcr_divergence"].rolling(win30m, min_periods=max(30, win5)).std()
     out["vcr_divergence_z"] = out["vcr_divergence"] / div_roll_std.replace(0.0, np.nan)
@@ -156,6 +166,10 @@ def _factor_vcr_divergence(df: pd.DataFrame) -> pd.Series:
 
 def _factor_iv_f_r2_30m(df: pd.DataFrame) -> pd.Series:
     return df.get("iv_f_r2_30m", pd.Series(index=df.index, dtype=float))
+
+
+def _factor_vcr_divergence_reversal(df: pd.DataFrame) -> pd.Series:
+    return df.get("vcr_divergence_reversal", pd.Series(index=df.index, dtype=float))
 
 
 def _factor_iv_chg_20s_abs(df: pd.DataFrame) -> pd.Series:
@@ -209,6 +223,14 @@ FACTOR_REGISTRY: Dict[str, FactorDef] = {
         description="30分钟滚动回归 r2（dIV~dF）",
         compute=_factor_iv_f_r2_30m,
         default_q=0.80,
+        default_op=">=",
+    ),
+    "vcr_divergence_reversal": FactorDef(
+        factor_id="vcr_divergence_reversal",
+        label="vcr_divergence_reversal",
+        description="vcr_divergence with fut reversal filter: (Ft-Ft-10s)*(Ft-10s-Ft-10min)<0",
+        compute=_factor_vcr_divergence_reversal,
+        default_q=0.90,
         default_op=">=",
     ),
     "iv_chg_20s_abs": FactorDef(

@@ -67,6 +67,47 @@ def _series_stats(s: pd.Series) -> dict:
     }
 
 
+def _compute_ic_ir_from_series(factor_ser: pd.Series, iv_close_ser: pd.Series) -> dict:
+    """
+    IC: Spearman corr(factor_t, iv_ret_fwd1_t)
+    IR: mean/std of 30-min IC series (same definition, computed per 30min window).
+    """
+    if factor_ser is None or iv_close_ser is None or len(factor_ser) == 0 or len(iv_close_ser) == 0:
+        return {"ic": np.nan, "ir": np.nan, "n_obs": 0, "n_days": 0}
+
+    x = pd.to_numeric(factor_ser, errors="coerce")
+    y = pd.to_numeric(iv_close_ser, errors="coerce")
+    idx = x.index.intersection(y.index)
+    if len(idx) == 0:
+        return {"ic": np.nan, "ir": np.nan, "n_obs": 0, "n_days": 0}
+
+    x = x.reindex(idx)
+    y = y.reindex(idx)
+    y_fwd = y.pct_change().shift(-1)
+
+    df = pd.DataFrame({"x": x, "y_fwd": y_fwd}).replace([np.inf, -np.inf], np.nan).dropna()
+    if df.empty:
+        return {"ic": np.nan, "ir": np.nan, "n_obs": 0, "n_bins": 0}
+
+    ic = float(df["x"].corr(df["y_fwd"], method="spearman"))
+
+    dics = []
+    for _, g in df.groupby(df.index.floor("30min")):
+        if len(g) < 5:
+            continue
+        v = g["x"].corr(g["y_fwd"], method="spearman")
+        if pd.notna(v):
+            dics.append(float(v))
+    if len(dics) >= 2:
+        s = pd.Series(dics, dtype=float)
+        sd = float(s.std(ddof=1))
+        ir = float(s.mean() / sd) if sd > 0 else np.nan
+    else:
+        ir = np.nan
+
+    return {"ic": ic, "ir": ir, "n_obs": int(len(df)), "n_bins": int(len(dics))}
+
+
 def apply_no_blank_time_axis(fig):
     """Compress long no-trade/no-update gaps by rendering x-axis as category."""
     fig.update_xaxes(type="category")
@@ -362,17 +403,36 @@ def _build_selected_agg_factor_input(df_raw: pd.DataFrame, cache: dict, params: 
     if details_df is None or getattr(details_df, "empty", True) or base_iv_ser is None or base_iv_ser.empty:
         return pd.DataFrame()
 
-    dfx = df_raw.copy()
-    dfx["dt_exch"] = pd.to_datetime(dfx["dt_exch"], errors="coerce")
-    dfx = dfx.dropna(subset=["dt_exch"]).sort_values("dt_exch")
-    dfx["_bucket"] = dfx["dt_exch"].dt.floor(params["base_rule"])
-
     selected = details_df[["dt", "symbol"]].dropna().drop_duplicates().copy()
     selected = selected.rename(columns={"dt": "_bucket"})
     selected["_bucket"] = pd.to_datetime(selected["_bucket"], errors="coerce")
     selected = selected.dropna(subset=["_bucket", "symbol"])
     if selected.empty:
         return pd.DataFrame()
+
+    needed_cols = ["dt_exch", "symbol", "is_future", "F_used", "d_volume", "spread", "traded_vega", "traded_vega_signed"]
+    use_cols = [c for c in needed_cols if c in df_raw.columns]
+    if ("dt_exch" not in use_cols) or ("symbol" not in use_cols):
+        return pd.DataFrame()
+
+    dfx = df_raw[use_cols].copy()
+    if not pd.api.types.is_datetime64_any_dtype(dfx["dt_exch"]):
+        dfx["dt_exch"] = pd.to_datetime(dfx["dt_exch"], errors="coerce")
+    dfx = dfx[dfx["dt_exch"].notna()]
+    if dfx.empty:
+        return pd.DataFrame()
+
+    # shrink rows before merge: keep only selected symbols + selected time range
+    sel_syms = selected["symbol"].astype(str).unique().tolist()
+    if sel_syms:
+        dfx = dfx[dfx["symbol"].astype(str).isin(sel_syms) | (dfx.get("is_future", False) == True)]
+    tmin = selected["_bucket"].min()
+    tmax = selected["_bucket"].max() + pd.Timedelta(params["base_rule"])
+    dfx = dfx[(dfx["dt_exch"] >= tmin) & (dfx["dt_exch"] <= tmax)]
+    if dfx.empty:
+        return pd.DataFrame()
+
+    dfx["_bucket"] = dfx["dt_exch"].dt.floor(params["base_rule"])
 
     # Per (bucket, symbol) keep latest quote, then aggregate across selected symbols in bucket.
     opt_rows = dfx.merge(selected, on=["_bucket", "symbol"], how="inner")
@@ -442,7 +502,13 @@ def _compute_main_chart_factor_results(df_raw: pd.DataFrame, cache: dict, params
     if len(idx) == 0 or not selected_factor_ids:
         return {}, pd.DataFrame()
 
-    factor_input = _build_selected_agg_factor_input(df_raw, cache, params)
+    factor_input_sig = (cache.get("sig"), len(df_raw))
+    if cache.get("_main_factor_input_sig") == factor_input_sig:
+        factor_input = cache.get("_main_factor_input", pd.DataFrame())
+    else:
+        factor_input = _build_selected_agg_factor_input(df_raw, cache, params)
+        cache["_main_factor_input_sig"] = factor_input_sig
+        cache["_main_factor_input"] = factor_input
     if factor_input.empty:
         return {}, pd.DataFrame()
 
@@ -522,7 +588,10 @@ def render_charts(df_raw: pd.DataFrame, params: dict, cache: dict):
     idx = cache["ohlc"].index
     for fid in selected_factor_ids:
         trig_ser = factor_results.get(fid, {}).get("trigger", pd.Series(False, index=idx))
-        trig_idx = idx[trig_ser.values]
+        trig_mask = pd.Series(trig_ser, index=getattr(trig_ser, "index", None)).reindex(idx).fillna(False).astype(bool).to_numpy()
+        if len(trig_mask) != len(idx):
+            trig_mask = np.zeros(len(idx), dtype=bool)
+        trig_idx = idx[trig_mask]
         if len(trig_idx) == 0:
             continue
         y_ref = cache["ohlc"].loc[trig_idx, "high"].astype(float)
@@ -553,14 +622,22 @@ def render_charts(df_raw: pd.DataFrame, params: dict, cache: dict):
         sum_rows = []
         for fid in selected_factor_ids:
             tser = factor_results.get(fid, {}).get("trigger", pd.Series(False, index=idx))
+            tser = pd.Series(tser, index=getattr(tser, "index", None)).reindex(idx).fillna(False).astype(bool)
             thr = factor_results.get(fid, {}).get("threshold", np.nan)
-            sig_stats = _series_stats(factor_results.get(fid, {}).get("signal", pd.Series(dtype=float)))
+            sig_raw = factor_results.get(fid, {}).get("signal", pd.Series(dtype=float))
+            sig_stats = _series_stats(sig_raw)
+            sig_kline = pd.to_numeric(sig_raw, errors="coerce").resample(params["kline_rule"]).last().reindex(idx)
+            icir = _compute_ic_ir_from_series(sig_kline, cache["ohlc"]["close"])
             cnt = int(tser.sum()) if len(tser) else 0
             sum_rows.append(
                 {
                     "factor": factors[fid].label,
                     "threshold": thr,
                     "trigger_count": cnt,
+                    "ic": icir["ic"],
+                    "ir": icir["ir"],
+                    "ic_n_obs": icir["n_obs"],
+                    "ir_n_bins_30m": icir["n_bins"],
                     "min": sig_stats["min"],
                     "max": sig_stats["max"],
                     "q25": sig_stats["q25"],
@@ -755,7 +832,10 @@ def render_single_contract_iv_chart(df_raw: pd.DataFrame, params: dict, main_tim
     factor_colors = ["#8a2be2", "#ff7f0e", "#1f77b4", "#2ca02c", "#d62728", "#17becf"]
     for i, fid in enumerate(selected_factor_ids):
         trig_ser = factor_results.get(fid, {}).get("trigger", pd.Series(False, index=idx))
-        trig_idx = idx[trig_ser.values]
+        trig_mask = pd.Series(trig_ser, index=getattr(trig_ser, "index", None)).reindex(idx).fillna(False).astype(bool).to_numpy()
+        if len(trig_mask) != len(idx):
+            trig_mask = np.zeros(len(idx), dtype=bool)
+        trig_idx = idx[trig_mask]
         if len(trig_idx) == 0:
             continue
         y_ref = ohlc_single.loc[trig_idx, "high"].astype(float)
@@ -803,13 +883,21 @@ def render_single_contract_iv_chart(df_raw: pd.DataFrame, params: dict, main_tim
     trig_tables = []
     for fid in selected_factor_ids:
         tser = factor_results.get(fid, {}).get("trigger", pd.Series(False, index=idx))
+        tser = pd.Series(tser, index=getattr(tser, "index", None)).reindex(idx).fillna(False).astype(bool)
         thr = factor_results.get(fid, {}).get("threshold", np.nan)
-        sig_stats = _series_stats(factor_results.get(fid, {}).get("signal", pd.Series(dtype=float)))
+        sig_raw = factor_results.get(fid, {}).get("signal", pd.Series(dtype=float))
+        sig_stats = _series_stats(sig_raw)
+        sig_kline = pd.to_numeric(sig_raw, errors="coerce").resample(params["kline_rule"]).last().reindex(idx)
+        icir = _compute_ic_ir_from_series(sig_kline, ohlc_single["close"])
         cnt = int(tser.sum()) if len(tser) else 0
         sum_rows.append({
             "factor": factors[fid].label,
             "threshold": thr,
             "trigger_count": cnt,
+            "ic": icir["ic"],
+            "ir": icir["ir"],
+            "ic_n_obs": icir["n_obs"],
+            "ir_n_bins_30m": icir["n_bins"],
             "min": sig_stats["min"],
             "max": sig_stats["max"],
             "q25": sig_stats["q25"],
