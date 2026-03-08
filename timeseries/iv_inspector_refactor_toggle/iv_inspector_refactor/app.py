@@ -401,10 +401,18 @@ def render_single_contract_iv_chart(df_raw: pd.DataFrame, params: dict, main_tim
     else:
         vol_ser = pd.Series(0.0, index=ohlc_single.index)
 
-    idx = pd.DatetimeIndex(main_time_index) if (main_time_index is not None and len(main_time_index) > 0) else ohlc_single.index
+    orig_idx = ohlc_single.index
+    idx = pd.DatetimeIndex(main_time_index) if (main_time_index is not None and len(main_time_index) > 0) else orig_idx
     ohlc_single = ohlc_single.reindex(idx)
     vega_ser = vega_ser.reindex(idx).fillna(0.0)
     vol_ser = vol_ser.reindex(idx).fillna(0.0)
+
+    # 若对齐主时间轴后K线全空，则回退到该合约自身时间轴（避免“图刷不出来”）
+    if ohlc_single[["open", "high", "low", "close"]].notna().sum().sum() == 0:
+        idx = orig_idx
+        ohlc_single = ohlc_single.reindex(idx)
+        vega_ser = vega_ser.reindex(idx).fillna(0.0)
+        vol_ser = vol_ser.reindex(idx).fillna(0.0)
 
     # 因子触发（通用接口：新增因子只需在 iv_inspector/factors.py 注册）
     factor_base = build_factor_base_frame(df_raw=df_raw, symbol=str(sym), base_rule=params["base_rule"])
