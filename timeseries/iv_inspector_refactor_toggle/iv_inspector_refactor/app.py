@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import pandas as pd
+import numpy as np
 import streamlit as st
 from pathlib import Path
 from typing import Optional
