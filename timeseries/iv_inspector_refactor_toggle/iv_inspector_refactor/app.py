@@ -420,7 +420,11 @@ def render_single_contract_iv_chart(df_raw: pd.DataFrame, params: dict, main_tim
         )
         _trigger = _trigger_base.resample(params["kline_rule"]).max() if not _trigger_base.empty else pd.Series(False, index=idx)
         _trigger = _trigger.reindex(idx).fillna(False)
-        factor_results[fid] = {"trigger": _trigger, "threshold": _thr}
+
+        _signal_k = _signal.resample(params["kline_rule"]).last() if not _signal.empty else pd.Series(np.nan, index=idx)
+        _signal_k = _signal_k.reindex(idx)
+
+        factor_results[fid] = {"trigger": _trigger, "threshold": _thr, "signal": _signal_k}
 
     # Vega 柱：统一画绝对值；颜色表示方向（正=红，负=绿）
     vega_sign = vega_ser.copy()
@@ -437,7 +441,8 @@ def render_single_contract_iv_chart(df_raw: pd.DataFrame, params: dict, main_tim
         shared_xaxes=True,
         vertical_spacing=0.04,
         row_heights=[0.62, 0.19, 0.19],
-        subplot_titles=(f"IV K线：{sym}", "成交 Vega", "成交量（张数）"),
+        subplot_titles=(f"IV K线：{sym}", "成交 Vega + 指标值", "成交量（张数）"),
+        specs=[[{"secondary_y": False}], [{"secondary_y": True}], [{"secondary_y": False}]],
     )
 
     fig.add_trace(
@@ -468,7 +473,7 @@ def render_single_contract_iv_chart(df_raw: pd.DataFrame, params: dict, main_tim
                 x=trig_idx,
                 y=y_ref,
                 mode="markers",
-                marker=dict(symbol="triangle-up", size=9, color=factor_colors[i % len(factor_colors)]),
+                marker=dict(symbol="diamond", size=14, color=factor_colors[i % len(factor_colors)], line=dict(color="black", width=1.2)),
                 name=f"触发:{factors[fid].label}",
                 hovertemplate=f"因子: {factors[fid].label}<br>时间: %{{x}}<extra></extra>",
             ),
@@ -477,16 +482,50 @@ def render_single_contract_iv_chart(df_raw: pd.DataFrame, params: dict, main_tim
 
     fig.add_trace(
         go.Bar(x=idx, y=vega_plot.values, marker_color=bar_colors, name="traded vega(abs)", opacity=0.75),
-        row=2, col=1,
+        row=2, col=1, secondary_y=False,
     )
+
+    # 在第二行右轴叠加“指标值柱 + 阈值线”，方便直观看数值大小
+    if selected_factor_ids:
+        fid0 = selected_factor_ids[0]
+        sig0 = factor_results.get(fid0, {}).get("signal", pd.Series(np.nan, index=idx)).reindex(idx)
+        thr0 = factor_results.get(fid0, {}).get("threshold", np.nan)
+        c0 = factor_colors[0]
+
+        fig.add_trace(
+            go.Bar(
+                x=idx,
+                y=sig0.values,
+                name=f"指标值:{factors[fid0].label}",
+                marker_color=c0,
+                opacity=0.38,
+                hovertemplate=f"{factors[fid0].label}<br>时间: %{{x}}<br>值: %{{y:.6f}}<extra></extra>",
+            ),
+            row=2, col=1, secondary_y=True,
+        )
+
+        if np.isfinite(thr0):
+            fig.add_trace(
+                go.Scatter(
+                    x=idx,
+                    y=[thr0] * len(idx),
+                    mode="lines",
+                    line=dict(color=c0, width=2, dash="dash"),
+                    name=f"阈值:{factors[fid0].label}",
+                    hovertemplate=f"阈值 {factors[fid0].label}: {thr0:.6f}<extra></extra>",
+                ),
+                row=2, col=1, secondary_y=True,
+            )
 
     fig.add_trace(
         go.Bar(x=idx, y=vol_ser.values, marker_color=vol_colors, name="volume_lots", opacity=0.75),
         row=3, col=1,
     )
 
-    fig.update_layout(height=860, margin=dict(l=40, r=30, t=40, b=30), showlegend=False)
+    fig.update_layout(height=900, margin=dict(l=40, r=30, t=40, b=30), showlegend=True)
     fig.update_xaxes(rangeslider_visible=False, row=1, col=1)
+    fig.update_yaxes(title_text="Vega(abs)", row=2, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="指标值", row=2, col=1, secondary_y=True)
     fig = apply_no_blank_time_axis(fig)
 
     PLOTLY_CONFIG = dict(
