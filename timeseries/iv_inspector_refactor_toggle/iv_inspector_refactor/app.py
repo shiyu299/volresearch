@@ -420,11 +420,7 @@ def render_single_contract_iv_chart(df_raw: pd.DataFrame, params: dict, main_tim
         )
         _trigger = _trigger_base.resample(params["kline_rule"]).max() if not _trigger_base.empty else pd.Series(False, index=idx)
         _trigger = _trigger.reindex(idx).fillna(False)
-
-        _signal_k = _signal.resample(params["kline_rule"]).last() if not _signal.empty else pd.Series(np.nan, index=idx)
-        _signal_k = _signal_k.reindex(idx)
-
-        factor_results[fid] = {"trigger": _trigger, "threshold": _thr, "signal": _signal_k}
+        factor_results[fid] = {"trigger": _trigger, "threshold": _thr}
 
     # Vega 柱：统一画绝对值；颜色表示方向（正=红，负=绿）
     vega_sign = vega_ser.copy()
@@ -441,8 +437,7 @@ def render_single_contract_iv_chart(df_raw: pd.DataFrame, params: dict, main_tim
         shared_xaxes=True,
         vertical_spacing=0.04,
         row_heights=[0.62, 0.19, 0.19],
-        subplot_titles=(f"IV K线：{sym} + 指标值", "成交 Vega", "成交量（张数）"),
-        specs=[[{"secondary_y": True}], [{"secondary_y": False}], [{"secondary_y": False}]],
+        subplot_titles=(f"IV K线：{sym}", "成交 Vega", "成交量（张数）"),
     )
 
     fig.add_trace(
@@ -459,46 +454,26 @@ def render_single_contract_iv_chart(df_raw: pd.DataFrame, params: dict, main_tim
         row=1, col=1,
     )
 
-    # 指标值不再打点，改为叠加在K线图右轴（仅显示“触发”为True的值）
+    # 多因子触发点打标（不同颜色）
     factor_colors = ["#8a2be2", "#ff7f0e", "#1f77b4", "#2ca02c", "#d62728", "#17becf"]
     for i, fid in enumerate(selected_factor_ids):
-        trig_ser = factor_results.get(fid, {}).get("trigger", pd.Series(False, index=idx)).reindex(idx).fillna(False)
-        sig_ser = factor_results.get(fid, {}).get("signal", pd.Series(np.nan, index=idx)).reindex(idx)
-        thr = factor_results.get(fid, {}).get("threshold", np.nan)
-
-        sig_show = sig_ser.where(trig_ser)
-        mask = sig_show.notna()
-        if mask.sum() == 0:
+        trig_ser = factor_results.get(fid, {}).get("trigger", pd.Series(False, index=idx))
+        trig_idx = idx[trig_ser.values]
+        if len(trig_idx) == 0:
             continue
-
-        x_sig = idx[mask.values]
-        y_sig = sig_show[mask].values
-
-        c = factor_colors[i % len(factor_colors)]
+        y_ref = ohlc_single.loc[trig_idx, "high"].astype(float)
+        y_ref = y_ref.fillna(ohlc_single["close"]).ffill()
         fig.add_trace(
-            go.Bar(
-                x=x_sig,
-                y=y_sig,
-                name=f"指标值:{factors[fid].label}",
-                marker_color=c,
-                opacity=0.32,
-                hovertemplate=f"{factors[fid].label}<br>时间: %{{x}}<br>值: %{{y:.6f}}<extra></extra>",
+            go.Scatter(
+                x=trig_idx,
+                y=y_ref,
+                mode="markers",
+                marker=dict(symbol="triangle-up", size=14, color="#1f77ff", line=dict(color="#0b3d91", width=1.0)),
+                name=f"触发:{factors[fid].label}",
+                hovertemplate=f"因子: {factors[fid].label}<br>时间: %{{x}}<extra></extra>",
             ),
-            row=1, col=1, secondary_y=True,
+            row=1, col=1,
         )
-
-        if np.isfinite(thr):
-            fig.add_trace(
-                go.Scatter(
-                    x=idx,
-                    y=[thr] * len(idx),
-                    mode="lines",
-                    line=dict(color=c, width=1.8, dash="dash"),
-                    name=f"阈值:{factors[fid].label}",
-                    hovertemplate=f"阈值 {factors[fid].label}: {thr:.6f}<extra></extra>",
-                ),
-                row=1, col=1, secondary_y=True,
-            )
 
     fig.add_trace(
         go.Bar(x=idx, y=vega_plot.values, marker_color=bar_colors, name="traded vega(abs)", opacity=0.75),
@@ -510,10 +485,8 @@ def render_single_contract_iv_chart(df_raw: pd.DataFrame, params: dict, main_tim
         row=3, col=1,
     )
 
-    fig.update_layout(height=900, margin=dict(l=40, r=30, t=40, b=30), showlegend=True)
+    fig.update_layout(height=860, margin=dict(l=40, r=30, t=40, b=30), showlegend=False)
     fig.update_xaxes(rangeslider_visible=False, row=1, col=1)
-    fig.update_yaxes(title_text="指标值（触发后）", row=1, col=1, secondary_y=True)
-    fig.update_yaxes(title_text="Vega(abs)", row=2, col=1)
     fig = apply_no_blank_time_axis(fig)
 
     PLOTLY_CONFIG = dict(
