@@ -7,6 +7,7 @@ from typing import Callable, Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+VCR_MIN_R2 = 0.20  # r^2 gate for vcr_divergence; <=0 means no gate
 
 @dataclass(frozen=True)
 class FactorDef:
@@ -102,11 +103,20 @@ def build_factor_base_frame(df_raw: pd.DataFrame, symbol: str, base_rule: str) -
         out["iv_chg_60s"] = np.nan
 
     # vcr_divergence: 30分钟滚动回归 dIV = beta * dF + e，然后比较 real_dIV 与 fair_dIV
+    # 增加 r^2 过滤：仅当 r^2 >= VCR_MIN_R2 时，beta/fair_dIV/vcr_divergence 才有效
     x = out.get("fut_dF_5s", pd.Series(np.nan, index=out.index)).astype(float)
     y = out.get("iv_dIV_5s", pd.Series(np.nan, index=out.index)).astype(float)
     cov_xy = y.rolling(win30m, min_periods=max(30, win5)).cov(x)
     var_x = x.rolling(win30m, min_periods=max(30, win5)).var()
+    var_y = y.rolling(win30m, min_periods=max(30, win5)).var()
     beta_30m = cov_xy / var_x.replace(0.0, np.nan)
+    r2_30m = (cov_xy * cov_xy) / (var_x * var_y).replace(0.0, np.nan)
+    r2_30m = r2_30m.replace([np.inf, -np.inf], np.nan)
+    out["iv_f_r2_30m"] = r2_30m
+
+    if float(VCR_MIN_R2) > 0.0:
+        valid_mask = r2_30m >= float(VCR_MIN_R2)
+        beta_30m = beta_30m.where(valid_mask)
     out["iv_f_beta_30m"] = beta_30m.replace([np.inf, -np.inf], np.nan)
 
     out["fair_dIV_5s"] = out["iv_f_beta_30m"] * out["fut_dF_5s"]
@@ -142,6 +152,10 @@ def _factor_iv_f_div_60_abs(df: pd.DataFrame) -> pd.Series:
 
 def _factor_vcr_divergence(df: pd.DataFrame) -> pd.Series:
     return df.get("vcr_divergence", pd.Series(index=df.index, dtype=float))
+
+
+def _factor_iv_f_r2_30m(df: pd.DataFrame) -> pd.Series:
+    return df.get("iv_f_r2_30m", pd.Series(index=df.index, dtype=float))
 
 
 def _factor_iv_chg_20s_abs(df: pd.DataFrame) -> pd.Series:
@@ -184,9 +198,17 @@ FACTOR_REGISTRY: Dict[str, FactorDef] = {
     "vcr_divergence": FactorDef(
         factor_id="vcr_divergence",
         label="vcr_divergence",
-        description="30分钟回归得到 fair_dIV 后，real_dIV - fair_dIV",
+        description=f"30分钟回归得到 fair_dIV 后，real_dIV - fair_dIV（仅 r2>={VCR_MIN_R2:.2f} 生效）",
         compute=_factor_vcr_divergence,
         default_q=0.90,
+        default_op=">=",
+    ),
+    "iv_f_r2_30m": FactorDef(
+        factor_id="iv_f_r2_30m",
+        label="iv_f_r2_30m",
+        description="30分钟滚动回归 r2（dIV~dF）",
+        compute=_factor_iv_f_r2_30m,
+        default_q=0.80,
         default_op=">=",
     ),
     "iv_chg_20s_abs": FactorDef(
