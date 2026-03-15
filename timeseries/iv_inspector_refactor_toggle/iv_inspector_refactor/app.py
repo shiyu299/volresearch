@@ -4,10 +4,13 @@ import numpy as np
 import streamlit as st
 from pathlib import Path
 from typing import Optional
+import hashlib
+import json
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 from iv_inspector.data import list_data_files, load_data
+from iv_inspector.feature_store import factor_store_path, get_symbol_factor_material, load_factor_materials
 from iv_inspector.aggregation import make_iv_and_bar_series, make_ohlc
 from iv_inspector.viz import build_fut_iv_vega_stack_figure
 from iv_inspector.drilldown import render_drilldown_tabs, tables_to_excel_bytes
@@ -16,6 +19,7 @@ from iv_inspector.factors import list_factors, build_factor_base_frame, evaluate
 st.set_page_config(layout="wide")
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+APP_CACHE_DIR = REPO_ROOT / "data" / "cache" / "iv_app"
 
 
 def _estimate_option_strike_step(df: pd.DataFrame) -> float:
@@ -67,6 +71,19 @@ def _series_stats(s: pd.Series) -> dict:
         "q75": float(s.quantile(0.75)),
         "q90": float(s.quantile(0.90)),
     }
+
+
+def _get_precomputed_factor_materials(params: dict, cache: dict) -> pd.DataFrame:
+    data_fp = params.get("fp")
+    base_rule = params.get("base_rule")
+    sig = (str(data_fp), str(base_rule))
+    if cache.get("_factor_materials_sig") == sig:
+        return cache.get("_factor_materials_df", pd.DataFrame())
+
+    mats = load_factor_materials(data_fp, base_rule) if data_fp and base_rule else pd.DataFrame()
+    cache["_factor_materials_sig"] = sig
+    cache["_factor_materials_df"] = mats
+    return mats
 
 
 def _compute_ic_ir_from_series(factor_ser: pd.Series, iv_close_ser: pd.Series) -> dict:
@@ -211,7 +228,7 @@ def sidebar_params():
         base_rule = st.selectbox("基础频率（生成iv序列粒度）", ["250ms", "500ms", "1S", "2S", "5S"], index=2)
         kline_rule = st.selectbox("展示周期（细周期折线，粗周期K线）", ["2S", "5S", "10S", "30S", "1min", "5min"], index=4)
 
-        n = int(st.slider("ATM附近 n 个合约（用于画图）", 2, 60, 8, 1))
+        n = int(st.slider("ATM附近 n 个合约（用于画图）", 2, 60, 6, 1))
         otm_atm_only = st.checkbox("只选 OTM + ATM（过滤 ITM）", value=True)
         use_vega_weight = st.checkbox("iv 按 vega 加权", value=True)
 
@@ -274,7 +291,7 @@ def sidebar_params():
         min_valid_n = int(
             st.number_input(
                 "最少有效合约数（少于此值则不更新IV，沿用前值）",
-                value=4,
+                value=6,
                 step=1,
                 min_value=1,
             )
@@ -318,9 +335,43 @@ def signature(params: dict):
     )
 
 
+def _aggregation_cache_path(params: dict) -> Path:
+    fp = params.get("fp") or "unknown"
+    src = Path(fp)
+    stem = src.stem or "unknown"
+    src_abs = (REPO_ROOT / src).resolve() if not src.is_absolute() else src.resolve()
+    stat = src_abs.stat() if src_abs.exists() else None
+    payload = {
+        "sig": list(signature(params)),
+        "src": str(src_abs),
+        "mtime_ns": getattr(stat, "st_mtime_ns", None),
+        "size": getattr(stat, "st_size", None),
+    }
+    key = hashlib.md5(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:12]
+    out_dir = APP_CACHE_DIR / stem
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir / f"agg_{key}.pkl"
+
+
+def _load_aggregation_cache(cache_path: Path) -> dict:
+    if not cache_path.exists():
+        return {}
+    try:
+        obj = pd.read_pickle(cache_path)
+    except Exception:
+        return {}
+    return obj if isinstance(obj, dict) else {}
+
+
+def _save_aggregation_cache(cache_path: Path, payload: dict) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.to_pickle(payload, cache_path)
+
+
 def compute_if_needed(df_raw: pd.DataFrame, params: dict, submitted: bool, cache: dict):
     """Compute series + aggregates only when needed (button or params changed)."""
     sig = signature(params)
+    cache_path = _aggregation_cache_path(params)
 
     cache_has = ("sig" in cache) and ("ser" in cache) and ("bar_ser" in cache)
     if cache_has and (cache.get("sig") != sig) and (not submitted):
@@ -328,6 +379,15 @@ def compute_if_needed(df_raw: pd.DataFrame, params: dict, submitted: bool, cache
 
     need = (not cache_has) or submitted or (cache.get("sig") != sig and submitted)
     if not need:
+        cache["_agg_cache_path"] = str(cache_path)
+        cache["_agg_cache_source"] = "session"
+        return
+
+    disk_payload = _load_aggregation_cache(cache_path)
+    if disk_payload and disk_payload.get("sig") == sig:
+        cache.update(disk_payload)
+        cache["_agg_cache_path"] = str(cache_path)
+        cache["_agg_cache_source"] = "disk"
         return
 
     call_kwargs = dict(
@@ -426,6 +486,23 @@ def compute_if_needed(df_raw: pd.DataFrame, params: dict, submitted: bool, cache
         bar_signed_agg=bar_signed_agg,
         debug_df=debug_df,
         details_df=details_df,
+    )
+    cache["_agg_cache_path"] = str(cache_path)
+    cache["_agg_cache_source"] = "fresh"
+    _save_aggregation_cache(
+        cache_path,
+        {
+            "fut_ser": fut_ser,
+            "sig": sig,
+            "ser": ser,
+            "bar_ser": bar_ser,
+            "bar_signed": bar_signed,
+            "ohlc": ohlc,
+            "bar_agg": bar_agg,
+            "bar_signed_agg": bar_signed_agg,
+            "debug_df": debug_df,
+            "details_df": details_df,
+        },
     )
 
 
@@ -532,7 +609,10 @@ def _build_selected_agg_factor_input(df_raw: pd.DataFrame, cache: dict, params: 
     return out
 
 
-def _compute_main_chart_factor_results(df_raw: pd.DataFrame, cache: dict, params: dict, selected_factor_ids: list[str], threshold_mode: str, q: float, op: str, abs_value: Optional[float]):
+def _compute_main_chart_factor_results(df_raw: pd.DataFrame, cache: dict, params: dict, selected_factor_ids: list[str], factor_settings: dict):
+    if cache.get("sig") != signature(params):
+        return {}, pd.DataFrame()
+
     ohlc = cache.get("ohlc", pd.DataFrame())
     idx = ohlc.index if ohlc is not None and not ohlc.empty else pd.DatetimeIndex([])
     if len(idx) == 0 or not selected_factor_ids:
@@ -558,17 +638,18 @@ def _compute_main_chart_factor_results(df_raw: pd.DataFrame, cache: dict, params
 
     factor_results = {}
     for fid in selected_factor_ids:
+        cfg = factor_settings.get(fid, {})
         _signal, _trigger_base, _thr = evaluate_factor_trigger(
             factor_base,
             fid,
-            mode=threshold_mode,
-            q=q,
-            op=op,
-            value=abs_value,
+            mode=cfg.get("mode", "quantile"),
+            q=float(cfg.get("q", 0.95)),
+            op=cfg.get("op", ">="),
+            value=cfg.get("value"),
         )
         _trigger = _trigger_base.resample(params["kline_rule"]).max() if not _trigger_base.empty else pd.Series(False, index=idx)
         _trigger = _trigger.reindex(idx).fillna(False)
-        factor_results[fid] = {"signal": _signal, "trigger": _trigger, "threshold": _thr}
+        factor_results[fid] = {"signal": _signal, "trigger": _trigger, "threshold": _thr, "config": cfg}
 
     return factor_results, factor_base
 
@@ -620,6 +701,9 @@ def render_charts(df_raw: pd.DataFrame, params: dict, cache: dict):
         op=op,
         abs_value=abs_value,
     )
+
+    if cache.get("sig") != signature(params):
+        st.caption("主图因子统计已暂停：当前文件或参数已变更，但主图缓存仍是上一次结果。点击“更新图表”后再看主图因子。")
 
     idx = cache["ohlc"].index
     for fid in selected_factor_ids:
@@ -684,9 +768,175 @@ def render_charts(df_raw: pd.DataFrame, params: dict, cache: dict):
             )
         st.dataframe(pd.DataFrame(sum_rows), use_container_width=True, height=160)
 
+def render_charts_v2(df_raw: pd.DataFrame, params: dict, cache: dict):
+    st.markdown("### 图表")
+
+    factors = list_factors()
+    factor_keys = list(factors.keys())
+    factor_labels = [factors[k].label for k in factor_keys]
+    label_to_id = {factors[k].label: k for k in factor_keys}
+
+    selected_labels = st.multiselect(
+        "主图触发因子（选取合约加总口径，可多选）",
+        options=factor_labels,
+        default=factor_labels[:1],
+        key="main_factor_multi_labels_v2",
+    )
+    selected_factor_ids = [label_to_id[x] for x in selected_labels if x in label_to_id]
+
+    factor_form_sig = (tuple(selected_factor_ids), cache.get("sig"))
+    if st.session_state.get("_main_factor_applied_sig") != factor_form_sig:
+        st.session_state["_main_factor_applied_sig"] = factor_form_sig
+        st.session_state["_main_factor_applied_settings"] = {}
+
+    applied_settings = st.session_state.get("_main_factor_applied_settings", {})
+    pending_settings = {}
+    if selected_factor_ids:
+        st.caption("主图因子参数先选择，再点“应用主图因子参数”后才计算。")
+    for fid in selected_factor_ids:
+        fdef = factors[fid]
+        prev_cfg = applied_settings.get(fid, {})
+        c1, c2, c3 = st.columns([1, 1, 1])
+        prev_mode = prev_cfg.get("mode", "quantile")
+        mode = c1.selectbox(
+            f"{fdef.label} 阈值模式",
+            ["quantile", "absolute"],
+            index=0 if prev_mode == "quantile" else 1,
+            key=f"main_factor_threshold_mode_v2_{fid}",
+        )
+        if mode == "quantile":
+            q = float(
+                c2.slider(
+                    f"{fdef.label} 分位数",
+                    0.50,
+                    0.999,
+                    float(prev_cfg.get("q", fdef.default_q)),
+                    0.005,
+                    key=f"main_factor_q_v2_{fid}",
+                )
+            )
+            value = None
+        else:
+            q = float(prev_cfg.get("q", fdef.default_q))
+            value = float(
+                c2.number_input(
+                    f"{fdef.label} 绝对阈值",
+                    value=float(prev_cfg.get("value", 0.0) or 0.0),
+                    step=0.1,
+                    key=f"main_factor_abs_value_v2_{fid}",
+                )
+            )
+        prev_op = prev_cfg.get("op", fdef.default_op)
+        op = c3.selectbox(
+            f"{fdef.label} 触发方向",
+            [">=", "<="],
+            index=0 if prev_op == ">=" else 1,
+            key=f"main_factor_op_v2_{fid}",
+        )
+        pending_settings[fid] = {"mode": mode, "q": q, "op": op, "value": value}
+
+    factor_settings = applied_settings
+    factor_submit = st.button("应用主图因子参数", key="main_factor_apply_v2") if selected_factor_ids else False
+    if factor_submit:
+        st.session_state["_main_factor_applied_settings"] = pending_settings
+        factor_settings = pending_settings
+
+    fig = build_fut_iv_vega_stack_figure(
+        cache["fut_ser"],
+        cache["ohlc"],
+        cache["bar_agg"],
+        cache["bar_signed_agg"],
+    )
+
+    can_run_main_factors = bool(selected_factor_ids) and all(fid in factor_settings for fid in selected_factor_ids)
+    if can_run_main_factors:
+        factor_results, _factor_base = _compute_main_chart_factor_results(
+            df_raw=df_raw,
+            cache=cache,
+            params=params,
+            selected_factor_ids=selected_factor_ids,
+            factor_settings=factor_settings,
+        )
+    else:
+        factor_results, _factor_base = {}, pd.DataFrame()
+
+    if cache.get("sig") != signature(params):
+        st.caption("主图因子统计已暂停：当前文件或参数已变更，但主图缓存仍是上一次结果。点击“更新图表”后再看主图因子。")
+
+    idx = cache["ohlc"].index
+    for fid in selected_factor_ids:
+        trig_ser = factor_results.get(fid, {}).get("trigger", pd.Series(False, index=idx))
+        trig_mask = pd.Series(trig_ser, index=getattr(trig_ser, "index", None)).reindex(idx).fillna(False).astype(bool).to_numpy()
+        if len(trig_mask) != len(idx):
+            trig_mask = np.zeros(len(idx), dtype=bool)
+        trig_idx = idx[trig_mask]
+        if len(trig_idx) == 0:
+            continue
+        y_ref = cache["ohlc"].loc[trig_idx, "high"].astype(float)
+        y_ref = y_ref.fillna(cache["ohlc"]["close"]).ffill()
+        fig.add_trace(
+            go.Scatter(
+                x=trig_idx,
+                y=y_ref,
+                mode="markers",
+                marker=dict(symbol="triangle-up", size=14, color="#1f77ff", line=dict(color="#0b3d91", width=1.0)),
+                name=f"主图触发:{factors[fid].label}",
+                hovertemplate=f"主图因子: {factors[fid].label}<br>时间: %{{x}}<extra></extra>",
+            ),
+            row=1,
+            col=1,
+            secondary_y=False,
+        )
+
+    fig = apply_no_blank_time_axis(fig)
+    plotly_config = dict(
+        displaylogo=False,
+        scrollZoom=True,
+        modeBarButtonsToAdd=["autoScale2d", "resetScale2d"],
+    )
+    st.plotly_chart(fig, use_container_width=True, config=plotly_config)
+
+    if cache.get("_agg_cache_path"):
+        st.caption(f"主图聚合缓存: {cache.get('_agg_cache_path')} [{cache.get('_agg_cache_source', 'unknown')}]")
+
+    if selected_factor_ids and not can_run_main_factors:
+        st.caption("主图因子参数尚未应用。先设置参数，再点“应用主图因子参数”。")
+
+    if selected_factor_ids and can_run_main_factors:
+        sum_rows = []
+        for fid in selected_factor_ids:
+            tser = factor_results.get(fid, {}).get("trigger", pd.Series(False, index=idx))
+            tser = pd.Series(tser, index=getattr(tser, "index", None)).reindex(idx).fillna(False).astype(bool)
+            thr = factor_results.get(fid, {}).get("threshold", np.nan)
+            cfg = factor_results.get(fid, {}).get("config", {})
+            sig_raw = factor_results.get(fid, {}).get("signal", pd.Series(dtype=float))
+            sig_stats = _series_stats(sig_raw)
+            sig_kline = _safe_resample_signal(sig_raw, params["kline_rule"], idx)
+            icir = _compute_ic_ir_from_series(sig_kline, cache["ohlc"]["close"])
+            cnt = int(tser.sum()) if len(tser) else 0
+            sum_rows.append(
+                {
+                    "factor": factors[fid].label,
+                    "mode": cfg.get("mode"),
+                    "op": cfg.get("op"),
+                    "threshold": thr,
+                    "trigger_count": cnt,
+                    "ic": icir["ic"],
+                    "ir": icir["ir"],
+                    "ic_n_obs": icir["n_obs"],
+                    "ir_n_bins_30m": icir["n_bins"],
+                    "min": sig_stats["min"],
+                    "max": sig_stats["max"],
+                    "q25": sig_stats["q25"],
+                    "q50": sig_stats["q50"],
+                    "q75": sig_stats["q75"],
+                    "q90": sig_stats["q90"],
+                }
+            )
+        st.dataframe(pd.DataFrame(sum_rows), use_container_width=True, height=180)
 
 
-def render_single_contract_iv_chart(df_raw: pd.DataFrame, params: dict, main_time_index: Optional[pd.DatetimeIndex] = None):
+def render_single_contract_iv_chart(df_raw: pd.DataFrame, params: dict, cache: dict, main_time_index: Optional[pd.DatetimeIndex] = None):
     """Render single-contract IV K-line + traded vega + traded volume."""
     st.markdown("### 单合约 IV / 成交Vega / 成交量（张数）")
 
@@ -817,7 +1067,11 @@ def render_single_contract_iv_chart(df_raw: pd.DataFrame, params: dict, main_tim
         vol_ser = vol_ser.reindex(idx).fillna(0.0)
 
     # 因子触发（通用接口：新增因子只需在 iv_inspector/factors.py 注册）
-    factor_base = build_factor_base_frame(df_raw=df_raw, symbol=str(sym), base_rule=params["base_rule"])
+    precomputed = _get_precomputed_factor_materials(params, cache)
+    factor_base = get_symbol_factor_material(precomputed, str(sym))
+    using_precomputed = factor_base is not None and not factor_base.empty
+    if not using_precomputed:
+        factor_base = build_factor_base_frame(df_raw=df_raw, symbol=str(sym), base_rule=params["base_rule"])
     factor_results = {}
     for fid in selected_factor_ids:
         _signal, _trigger_base, _thr = evaluate_factor_trigger(
@@ -908,6 +1162,11 @@ def render_single_contract_iv_chart(df_raw: pd.DataFrame, params: dict, main_tim
         modeBarButtonsToAdd=["autoScale2d", "resetScale2d"],
     )
     st.plotly_chart(fig, use_container_width=True, config=PLOTLY_CONFIG)
+
+    if using_precomputed:
+        st.caption(f"Factor materials: {factor_store_path(params['fp'], params['base_rule'])}")
+    else:
+        st.caption("Factor materials not found for current base_rule; using in-app fallback build.")
 
     if not selected_factor_ids:
         st.caption("未选择因子")
@@ -1062,8 +1321,8 @@ def main():
     if ("ser" not in cache) or cache.get("ser") is None or cache.get("ser").empty:
         return
 
-    render_charts(df_raw, params, cache)
-    render_single_contract_iv_chart(df_raw, params, main_time_index=cache.get("ohlc", pd.DataFrame()).index)
+    render_charts_v2(df_raw, params, cache)
+    render_single_contract_iv_chart(df_raw, params, cache, main_time_index=cache.get("ohlc", pd.DataFrame()).index)
     render_debug_table(cache)
     render_drilldown(df_raw, params)
 

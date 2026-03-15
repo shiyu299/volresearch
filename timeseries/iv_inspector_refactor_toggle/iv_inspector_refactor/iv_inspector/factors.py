@@ -7,7 +7,10 @@ from typing import Callable, Dict, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from iv_inspector.feature_store import build_factor_material_frame
+
 VCR_MIN_R2 = 0.20  # r^2 gate for vcr_divergence; <=0 means no gate
+
 
 @dataclass(frozen=True)
 class FactorDef:
@@ -19,128 +22,11 @@ class FactorDef:
     default_op: str = ">="  # ">=" | "<="
 
 
-def _rolling_bins_for_seconds(base_rule: str, sec: int) -> int:
-    try:
-        step = pd.Timedelta(base_rule).total_seconds()
-    except Exception:
-        step = 1.0
-    step = max(step, 1.0)
-    return max(1, int(round(sec / step)))
-
-
 def build_factor_base_frame(df_raw: pd.DataFrame, symbol: str, base_rule: str) -> pd.DataFrame:
-    dfo = df_raw.copy()
-    dfo["dt_exch"] = pd.to_datetime(dfo["dt_exch"], errors="coerce")
-    dfo = dfo.dropna(subset=["dt_exch"]).sort_values("dt_exch")
-
-    # option leg (selected contract)
-    opt = dfo[dfo.get("symbol", "").astype(str) == str(symbol)].copy()
-
-    out = pd.DataFrame()
-    if not opt.empty:
-        idx = pd.date_range(opt["dt_exch"].min().floor(base_rule), opt["dt_exch"].max().ceil(base_rule), freq=base_rule)
-        out = pd.DataFrame(index=idx)
-
-        if "iv" in opt.columns:
-            out["iv"] = opt.set_index("dt_exch")["iv"].resample(base_rule).last().reindex(idx).ffill()
-
-        if "traded_vega" in opt.columns:
-            out["traded_vega"] = opt.set_index("dt_exch")["traded_vega"].resample(base_rule).sum().reindex(idx).fillna(0.0)
-        else:
-            out["traded_vega"] = 0.0
-
-        if "spread" in opt.columns:
-            out["opt_spread"] = opt.set_index("dt_exch")["spread"].resample(base_rule).median().reindex(idx).ffill()
-        else:
-            out["opt_spread"] = np.nan
-
-    # futures leg (for no_trade_move / div)
-    fut = dfo[dfo.get("is_future", False) == True].copy() if "is_future" in dfo.columns else pd.DataFrame()
-    if not fut.empty:
-        if out.empty:
-            idx = pd.date_range(fut["dt_exch"].min().floor(base_rule), fut["dt_exch"].max().ceil(base_rule), freq=base_rule)
-            out = pd.DataFrame(index=idx)
-        else:
-            idx = out.index
-
-        if "F_used" in fut.columns:
-            out["fut_price"] = fut.set_index("dt_exch")["F_used"].resample(base_rule).last().reindex(idx).ffill()
-        if "d_volume" in fut.columns:
-            out["fut_dvol"] = fut.set_index("dt_exch")["d_volume"].resample(base_rule).sum().reindex(idx).fillna(0.0)
-        else:
-            out["fut_dvol"] = 0.0
-
+    out = build_factor_material_frame(df_raw, symbol, base_rule, vcr_min_r2=VCR_MIN_R2)
     if out.empty:
         return out
-
-    win5 = _rolling_bins_for_seconds(base_rule, 5)
-    win10 = _rolling_bins_for_seconds(base_rule, 10)
-    win10m = _rolling_bins_for_seconds(base_rule, 10 * 60)
-    win20 = _rolling_bins_for_seconds(base_rule, 20)
-    win60 = _rolling_bins_for_seconds(base_rule, 60)
-    win30m = _rolling_bins_for_seconds(base_rule, 30 * 60)
-
-    # derived common fields
-    if "fut_price" in out.columns:
-        out["fut_dF_5s"] = out["fut_price"].diff(win5)
-        out["fut_ret_10s"] = out["fut_price"].pct_change(win10)
-        out["fut_ret_60s"] = out["fut_price"].pct_change(win60)
-        out["fut_dvol_60s"] = out["fut_dvol"].rolling(win60).sum() if "fut_dvol" in out.columns else np.nan
-    else:
-        out["fut_dF_5s"] = np.nan
-        out["fut_ret_10s"] = np.nan
-        out["fut_ret_60s"] = np.nan
-        out["fut_dvol_60s"] = np.nan
-
-    if "iv" in out.columns:
-        out["iv_dIV_5s"] = out["iv"].diff(win5)
-        out["iv_chg_10s"] = out["iv"].diff(win10)
-        out["iv_chg_20s_abs"] = out["iv"].diff(win20).abs()
-        out["iv_chg_60s"] = out["iv"].diff(win60)
-    else:
-        out["iv_dIV_5s"] = np.nan
-        out["iv_chg_10s"] = np.nan
-        out["iv_chg_20s_abs"] = np.nan
-        out["iv_chg_60s"] = np.nan
-
-    # vcr_divergence: 30分钟滚动回归 dIV = beta * dF + e，然后比较 real_dIV 与 fair_dIV
-    # 增加 r^2 过滤：仅当 r^2 >= VCR_MIN_R2 时，beta/fair_dIV/vcr_divergence 才有效
-    x = out.get("fut_dF_5s", pd.Series(np.nan, index=out.index)).astype(float)
-    y = out.get("iv_dIV_5s", pd.Series(np.nan, index=out.index)).astype(float)
-    cov_xy = y.rolling(win30m, min_periods=max(30, win5)).cov(x)
-    var_x = x.rolling(win30m, min_periods=max(30, win5)).var()
-    var_y = y.rolling(win30m, min_periods=max(30, win5)).var()
-    beta_30m = cov_xy / var_x.replace(0.0, np.nan)
-    r2_30m = (cov_xy * cov_xy) / (var_x * var_y).replace(0.0, np.nan)
-    r2_30m = r2_30m.replace([np.inf, -np.inf], np.nan)
-    out["iv_f_r2_30m"] = r2_30m
-
-    if float(VCR_MIN_R2) > 0.0:
-        valid_mask = r2_30m >= float(VCR_MIN_R2)
-        beta_30m = beta_30m.where(valid_mask)
-    out["iv_f_beta_30m"] = beta_30m.replace([np.inf, -np.inf], np.nan)
-
-    out["fair_dIV_5s"] = out["iv_f_beta_30m"] * out["fut_dF_5s"]
-    out["vcr_divergence"] = out["iv_dIV_5s"] - out["fair_dIV_5s"]
-    # reversal condition:
-    # (Ft - Ft-10s) * (Ft-10s - Ft-10min) < 0
-    out["fut_dF_10s"] = out.get("fut_price", pd.Series(np.nan, index=out.index)).diff(win10)
-    out["fut_dF_10m_from_10s"] = (
-        out.get("fut_price", pd.Series(np.nan, index=out.index)).shift(win10) -
-        out.get("fut_price", pd.Series(np.nan, index=out.index)).shift(win10m)
-    )
-    out["fut_reversal_10s_10m"] = (out["fut_dF_10s"] * out["fut_dF_10m_from_10s"]) < 0
-    out["vcr_divergence_reversal"] = out["vcr_divergence"].where(out["fut_reversal_10s_10m"])
-
-    div_roll_std = out["vcr_divergence"].rolling(win30m, min_periods=max(30, win5)).std()
-    out["vcr_divergence_z"] = out["vcr_divergence"] / div_roll_std.replace(0.0, np.nan)
-
-    out["abs_traded_vega"] = out.get("traded_vega", 0.0).abs()
-    out["opt_spread_60s"] = out.get("opt_spread", np.nan).rolling(win60).median()
-    out["no_trade_move_60"] = out["fut_ret_60s"].abs() / (out["fut_dvol_60s"] + 1.0)
-    out["iv_f_div_60"] = out["iv_chg_60s"] * np.sign(out["fut_ret_60s"].fillna(0))
-
-    return out
+    return out.set_index("dt_exch", drop=True)
 
 
 def _factor_abs_traded_vega(df: pd.DataFrame) -> pd.Series:
@@ -179,7 +65,7 @@ def _factor_iv_chg_20s_abs(df: pd.DataFrame) -> pd.Series:
 FACTOR_REGISTRY: Dict[str, FactorDef] = {
     "abs_traded_vega": FactorDef(
         factor_id="abs_traded_vega",
-        label="abs_traded_vega（单合约）",
+        label="abs_traded_vega(单合约)",
         description="单合约绝对成交vega",
         compute=_factor_abs_traded_vega,
         default_q=0.95,
@@ -212,7 +98,7 @@ FACTOR_REGISTRY: Dict[str, FactorDef] = {
     "vcr_divergence": FactorDef(
         factor_id="vcr_divergence",
         label="vcr_divergence",
-        description=f"30分钟回归得到 fair_dIV 后，real_dIV - fair_dIV（仅 r2>={VCR_MIN_R2:.2f} 生效）",
+        description=f"30分钟回归得到 fair_dIV 后，real_dIV - fair_dIV，仅 r2>={VCR_MIN_R2:.2f} 生效",
         compute=_factor_vcr_divergence,
         default_q=0.90,
         default_op=">=",

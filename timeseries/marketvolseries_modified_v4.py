@@ -10,6 +10,7 @@ PL603 期权隐波/vega/traded_vega 计算（含 delta；同时保留期货行�
     - out_csv_preview_path: csv（预览，默认前 3000 行）
 """
 
+import argparse
 import re
 from pathlib import Path
 import numpy as np
@@ -418,17 +419,29 @@ def run_pl603_iv_traded_v4(
 
 
 if __name__ == "__main__":
-    out_path1 = DERIVED_DATA_DIR / "PL60526.parquet"
-    run_pl603_iv_traded_v4(
-        csv_path=RAW_DATA_DIR / "PL26.csv",
-        underlying="PL605",
-        expiry_date="2026-04-13",
-        spread_limit=25.0,
-        r=0.0,
-        day_count=365.0,
-        tz_exchange="Asia/Shanghai",
-        out_path=out_path1,
-        out_csv_preview_path=DERIVED_DATA_DIR / "PL60526preview5000.csv",
-        csv_preview_n=5000,
+    parser = argparse.ArgumentParser(description="Build modified-v4 option/futures dataset.")
+    parser.add_argument("--csv-path", default=str(RAW_DATA_DIR / "PL26.csv"))
+    parser.add_argument("--underlying", default="PL605")
+    parser.add_argument("--expiry-date", default="2026-04-13")
+    parser.add_argument("--spread-limit", type=float, default=25.0)
+    parser.add_argument("--r", type=float, default=0.0)
+    parser.add_argument("--day-count", type=float, default=365.0)
+    parser.add_argument("--tz-exchange", default="Asia/Shanghai")
+    parser.add_argument("--out-path", default=str(DERIVED_DATA_DIR / "PL60526.parquet"))
+    parser.add_argument("--out-csv-preview-path", default=str(DERIVED_DATA_DIR / "PL60526preview5000.csv"))
+    parser.add_argument("--csv-preview-n", type=int, default=5000)
+    args = parser.parse_args()
+
+    out = run_pl603_iv_traded_v4(
+        csv_path=args.csv_path,
+        underlying=args.underlying,
+        expiry_date=args.expiry_date,
+        spread_limit=args.spread_limit,
+        r=args.r,
+        day_count=args.day_count,
+        tz_exchange=args.tz_exchange,
+        out_path=args.out_path,
+        out_csv_preview_path=args.out_csv_preview_path,
+        csv_preview_n=args.csv_preview_n,
     )
-    print("done ->" + str(out_path1) + " + preview csv)")
+    print("done ->" + str(args.out_path) + f" ({len(out)} rows)")

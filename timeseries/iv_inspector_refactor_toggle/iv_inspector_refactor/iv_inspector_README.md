@@ -14,7 +14,8 @@
 app.py                Streamlit UI 入口
 iv_inspector/         核心逻辑模块
 data/raw/             原始输入数据
-data/derived/         app 读取的 parquet / csv
+data/derived/         modified v4 输出，app 主数据源
+data/factors/         factor 预计算中间层
 out/                  输出结果
 README.md             项目说明
 
@@ -30,3 +31,4 @@ cd iv_inspector_refactor
 streamlit run app.py
 
 将可视化使用的 parquet / csv 文件放入 `data/derived/`，原始输入放入 `data/raw/`。
+如需单合约 factor 加速，先运行 `precompute_factor_materials.py`，产物会写入 `data/factors/`。
