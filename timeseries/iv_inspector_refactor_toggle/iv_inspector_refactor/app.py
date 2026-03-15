@@ -15,6 +15,8 @@ from iv_inspector.factors import list_factors, build_factor_base_frame, evaluate
 
 st.set_page_config(layout="wide")
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
 
 def _estimate_option_strike_step(df: pd.DataFrame) -> float:
     """
@@ -193,13 +195,13 @@ def sidebar_params():
         st.markdown("### 参数（只在点“更新图表”后才会重算/重画上方K线与成交量）")
 
         files = list_data_files()
-        fp = st.selectbox("选择数据文件（data/ 下）", files) if files else None
+        fp = st.selectbox("选择数据文件（data/derived 下）", files) if files else None
 
         strike_gap_suggest = np.nan
         if fp:
             fp_for_hint = fp
             if not Path(fp_for_hint).is_absolute():
-                fp_for_hint = str((Path.cwd() / fp_for_hint).resolve())
+                fp_for_hint = str((REPO_ROOT / fp_for_hint).resolve())
             try:
                 df_hint = load_data(fp_for_hint)
                 strike_gap_suggest = _estimate_option_strike_step(df_hint)
@@ -1044,13 +1046,13 @@ def main():
     params, submitted = sidebar_params()
 
     if not params["fp"]:
-        st.info("data/ 下没有可选文件。")
+        st.info("data/derived 下没有可选文件。")
         return
 
     # Resolve selected path: support relative display paths (relative to repo root)
     fp = params["fp"]
     if fp and not Path(fp).is_absolute():
-        fp = str((Path.cwd() / fp).resolve())
+        fp = str((REPO_ROOT / fp).resolve())
     df_raw = load_data(fp)
     if df_raw is None or df_raw.empty:
         st.warning("数据为空。")

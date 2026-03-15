@@ -11,6 +11,7 @@ PL603 期权隐波/vega/traded_vega 计算（含 delta；同时保留期货行�
 """
 
 import re
+from pathlib import Path
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
@@ -142,18 +143,38 @@ def _session_code(dt: pd.Timestamp) -> str:
     return "OFF"
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+RAW_DATA_DIR = REPO_ROOT / "data" / "raw"
+DERIVED_DATA_DIR = REPO_ROOT / "data" / "derived"
+
+
+def _resolve_repo_path(path_like) -> Path:
+    path = Path(path_like)
+    if path.is_absolute():
+        return path
+    return REPO_ROOT / path
+
+
 def run_pl603_iv_traded_v4(
-    csv_path="pl.csv",
+    csv_path="data/raw/pl.csv",
     underlying="PL603",
     expiry_date="2026-02-11",   # 可填日期或日期时间；仅日期时默认 15:00:00
     spread_limit=15.0,
     r=0.0,
     day_count=365.0,
     tz_exchange="Asia/Shanghai",
-    out_path="PL603_option_iv_vega_traded_v4.parquet",
-    out_csv_preview_path="PL603_option_iv_vega_traded_v4_preview3000.csv",
+    out_path="data/derived/PL603_option_iv_vega_traded_v4.parquet",
+    out_csv_preview_path="data/derived/PL603_option_iv_vega_traded_v4_preview3000.csv",
     csv_preview_n=3000,
 ):
+    csv_path = _resolve_repo_path(csv_path)
+    out_path = _resolve_repo_path(out_path)
+    out_csv_preview_path = _resolve_repo_path(out_csv_preview_path) if out_csv_preview_path else None
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_csv_preview_path is not None:
+        out_csv_preview_path.parent.mkdir(parents=True, exist_ok=True)
+
     df = pd.read_csv(csv_path)
     df["symbol"] = df["symbol"].astype(str)
 
@@ -397,9 +418,9 @@ def run_pl603_iv_traded_v4(
 
 
 if __name__ == "__main__":
-    out_path1="PL60526.parquet"
+    out_path1 = DERIVED_DATA_DIR / "PL60526.parquet"
     run_pl603_iv_traded_v4(
-        csv_path="PL26.csv",
+        csv_path=RAW_DATA_DIR / "PL26.csv",
         underlying="PL605",
         expiry_date="2026-04-13",
         spread_limit=25.0,
@@ -407,7 +428,7 @@ if __name__ == "__main__":
         day_count=365.0,
         tz_exchange="Asia/Shanghai",
         out_path=out_path1,
-        out_csv_preview_path="PL60526preview5000.csv",
+        out_csv_preview_path=DERIVED_DATA_DIR / "PL60526preview5000.csv",
         csv_preview_n=5000,
     )
-    print("done ->"+out_path1+" + preview csv)")
+    print("done ->" + str(out_path1) + " + preview csv)")

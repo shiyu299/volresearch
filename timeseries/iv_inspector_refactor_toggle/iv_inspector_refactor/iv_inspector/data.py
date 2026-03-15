@@ -5,6 +5,16 @@ import pandas as pd
 import streamlit as st
 
 
+REPO_ROOT = Path(__file__).resolve().parents[4]
+
+
+def _resolve_repo_path(path_like: str) -> Path:
+    path = Path((path_like or "").strip().strip('"').strip("'")).expanduser()
+    if path.is_absolute():
+        return path
+    return REPO_ROOT / path
+
+
 # App会用到的核心列（CSV读取时优先只读这些，显著提速/降内存）
 CORE_COLS = {
     "timestamp", "dt_exch", "symbol", "underlying", "cp", "K",
@@ -20,13 +30,12 @@ CORE_COLS = {
 
 
 @st.cache_data
-def list_data_files(base_dir: str = "data") -> list[str]:
-    """List candidate data files under base_dir (parquet preferred)."""
-    base = Path(base_dir).expanduser()
+def list_data_files(base_dir: str = "data/derived") -> list[str]:
+    """List candidate visualization input files under base_dir (parquet preferred)."""
+    base = _resolve_repo_path(base_dir)
     if not base.exists() or not base.is_dir():
         return []
 
-    repo_root = Path.cwd().resolve()
     patterns = ["*.parquet", "*.pq", "*.feather", "*.csv.gz", "*.csv"]
 
     files = []
@@ -36,7 +45,7 @@ def list_data_files(base_dir: str = "data") -> list[str]:
                 continue
             fp_resolved = fp.resolve()
             try:
-                show = str(fp_resolved.relative_to(repo_root)) if repo_root in fp_resolved.parents else str(fp_resolved)
+                show = str(fp_resolved.relative_to(REPO_ROOT)) if REPO_ROOT in fp_resolved.parents else str(fp_resolved)
             except Exception:
                 show = str(fp_resolved)
             files.append(show)
@@ -77,19 +86,19 @@ def _read_csv_fast(path: str) -> pd.DataFrame:
 
 
 def load_data(path: str) -> pd.DataFrame:
-    path = (path or "").strip().strip('"').strip("'")
-    if not path:
+    resolved = _resolve_repo_path(path)
+    if not str(resolved):
         return pd.DataFrame()
 
-    lower = path.lower()
+    lower = str(resolved).lower()
     if lower.endswith(".parquet") or lower.endswith(".pq"):
-        df = pd.read_parquet(path)
+        df = pd.read_parquet(resolved)
     elif lower.endswith(".feather"):
-        df = pd.read_feather(path)
+        df = pd.read_feather(resolved)
     elif lower.endswith(".csv") or lower.endswith(".csv.gz"):
-        df = _read_csv_fast(path)
+        df = _read_csv_fast(str(resolved))
     else:
-        df = _read_csv_fast(path)
+        df = _read_csv_fast(str(resolved))
 
     # 时间列兼容：timestamp(ns) 或 dt_exch
     if "dt_exch" not in df.columns:
