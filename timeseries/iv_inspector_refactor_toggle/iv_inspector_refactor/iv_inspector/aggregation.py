@@ -49,6 +49,18 @@ class _State:
     f_quote: float
 
 
+def _grace_weight(elapsed_seconds: float) -> float:
+    if not np.isfinite(elapsed_seconds):
+        return 0.0
+    if elapsed_seconds >= 300.0:
+        return 0.0
+    if elapsed_seconds >= 240.0:
+        return 0.25
+    if elapsed_seconds >= 120.0:
+        return 0.5
+    return 1.0
+
+
 def _required_cols_ok(df: pd.DataFrame) -> bool:
     need = {"dt_exch", "symbol", "K", "F_used"}
     return need.issubset(df.columns)
@@ -205,6 +217,7 @@ def make_iv_and_bar_series(
     next_refresh_time = None
     last_pool_f = np.nan
     pool_syms: List[str] = []
+    pool_exit_since: Dict[str, pd.Timestamp] = {}
     prev_bt = None
     prev_sess = None
 
@@ -216,6 +229,7 @@ def make_iv_and_bar_series(
             if (cur_sess != prev_sess) or (gap_sec > max(120.0, pool_refresh_seconds + 5.0)):
                 state.clear()
                 pool_syms = []
+                pool_exit_since.clear()
                 next_refresh_time = None
         prev_bt = bt
         prev_sess = cur_sess
@@ -238,18 +252,44 @@ def make_iv_and_bar_series(
             and abs(float(f_now) - float(last_pool_f)) >= float(pool_refresh_fut_move)
         )
         if refresh_by_time or refresh_by_f_move:
+            prev_pool_set = set(pool_syms)
             pool_syms = _pick_pool_symbols(meta, float(f_now), int(n), bool(otm_atm_only))
+            cur_pool_set = set(pool_syms)
+
+            for sym in cur_pool_set:
+                pool_exit_since.pop(sym, None)
+
+            for sym in prev_pool_set - cur_pool_set:
+                if sym not in pool_exit_since:
+                    pool_exit_since[sym] = pd.Timestamp(bt)
+
+            expired = []
+            for sym, exit_ts in pool_exit_since.items():
+                if _grace_weight((pd.Timestamp(bt) - pd.Timestamp(exit_ts)).total_seconds()) <= 0.0:
+                    expired.append(sym)
+            for sym in expired:
+                pool_exit_since.pop(sym, None)
+
             next_refresh_time = bt + pool_refresh_td if pool_refresh_seconds > 0 else pd.Timestamp.max
             last_pool_f = float(f_now)
+
+        active_syms = list(pool_syms)
+        for sym, exit_ts in pool_exit_since.items():
+            mult = _grace_weight((pd.Timestamp(bt) - pd.Timestamp(exit_ts)).total_seconds())
+            if mult > 0.0 and sym not in active_syms:
+                active_syms.append(sym)
 
         used = []
         used_vega = []
         used_iv = []
         used_source = []
-        used_df = []
-        for sym in pool_syms:
+        used_decay = []
+        for sym in active_syms:
             src = "none"
             iv_eff = np.nan
+            decay_mult = 1.0 if sym in pool_syms else _grace_weight((pd.Timestamp(bt) - pd.Timestamp(pool_exit_since.get(sym))).total_seconds())
+            if decay_mult <= 0.0:
+                continue
             # check quote this bucket
             key = (bt, sym)
             if key in last_quote.index:
@@ -284,8 +324,9 @@ def make_iv_and_bar_series(
                 if np.isfinite(vega) and vega > 0:
                     used.append(sym)
                     used_iv.append(iv_eff)
-                    used_vega.append(float(vega))
-                    used_source.append(src)
+                    used_vega.append(float(vega) * float(decay_mult))
+                    used_source.append(src if decay_mult >= 0.999 else f"{src}_grace")
+                    used_decay.append(float(decay_mult))
 
         min_contracts_required = max(1, int(min_valid_n))
         if len(used) < min_contracts_required:
@@ -315,6 +356,7 @@ def make_iv_and_bar_series(
                 sum_vega_used=float(np.sum(used_vega) if len(used_vega) else 0.0),
                 min_iv_used=miniv,
                 max_iv_used=maxiv,
+                n_grace=int(sum(1 for x in used_decay if x < 0.999)),
                 bar=float(bar_ser.loc[bt]),
                 iv_fill_mode=iv_fill_mode,
                 fut_move_threshold=float(fut_move_threshold),
@@ -325,9 +367,9 @@ def make_iv_and_bar_series(
         )
 
         if details_rows is not None:
-            for sym, ivv, veg, src in zip(used, used_iv, used_vega, used_source):
+            for sym, ivv, veg, src, decay_mult in zip(used, used_iv, used_vega, used_source, used_decay):
                 details_rows.append(
-                    dict(dt=bt, symbol=sym, iv_eff=float(ivv), vega=float(veg), source=src, F_now=float(f_now))
+                    dict(dt=bt, symbol=sym, iv_eff=float(ivv), vega=float(veg), source=src, decay_mult=float(decay_mult), F_now=float(f_now))
                 )
 
     ser_raw = pd.Series(iv_index_raw, index=base_times, name="iv_atm_n_raw")

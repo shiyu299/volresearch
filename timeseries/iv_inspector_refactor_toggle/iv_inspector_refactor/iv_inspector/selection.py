@@ -134,6 +134,55 @@ def pick_contracts_atm_unique(df_interval: pd.DataFrame, n: int, otm_atm_only: b
     best = g.groupby("symbol", as_index=False)["atm_dist"].min().sort_values("atm_dist")
     return best["symbol"].head(max(1, int(n))).tolist()
 
+
+def pick_contracts_atm_plus_one_otm_each_side(df_interval: pd.DataFrame, n: int, otm_atm_only: bool) -> List[str]:
+    if df_interval is None or df_interval.empty or "symbol" not in df_interval.columns or "K" not in df_interval.columns:
+        return []
+
+    g = df_interval.dropna(subset=["symbol", "K"]).copy()
+    if g.empty:
+        return []
+
+    F = infer_F(g)
+    if not np.isfinite(F) or F <= 0:
+        return []
+
+    base_symbols = pick_contracts_atm_unique(g, n=n, otm_atm_only=otm_atm_only)
+    out = list(base_symbols)
+    if not out:
+        return out
+
+    base = g[g["symbol"].isin(out)].copy()
+    k_base = pd.to_numeric(base["K"], errors="coerce")
+    min_k = float(k_base.min()) if k_base.notna().any() else np.nan
+    max_k = float(k_base.max()) if k_base.notna().any() else np.nan
+
+    rest = g[~g["symbol"].isin(out)].copy()
+    if otm_atm_only:
+        rest = rest.loc[otm_atm_mask(rest, F)].copy()
+    if rest.empty:
+        return out
+
+    if np.isfinite(min_k):
+        lower = rest[pd.to_numeric(rest["K"], errors="coerce") < min_k].copy()
+        if not lower.empty:
+            lower["edge_dist"] = (pd.to_numeric(lower["K"], errors="coerce") - min_k).abs()
+            lower_best = lower.groupby("symbol", as_index=False)["edge_dist"].min().sort_values("edge_dist")
+            if not lower_best.empty:
+                out.append(str(lower_best.iloc[0]["symbol"]))
+
+    if np.isfinite(max_k):
+        upper = rest[pd.to_numeric(rest["K"], errors="coerce") > max_k].copy()
+        if not upper.empty:
+            upper["edge_dist"] = (pd.to_numeric(upper["K"], errors="coerce") - max_k).abs()
+            upper_best = upper.groupby("symbol", as_index=False)["edge_dist"].min().sort_values("edge_dist")
+            if not upper_best.empty:
+                sym = str(upper_best.iloc[0]["symbol"])
+                if sym not in out:
+                    out.append(sym)
+
+    return out
+
 def pick_contracts_top_volume(df_interval: pd.DataFrame, m: int) -> List[str]:
     if df_interval is None or df_interval.empty or "symbol" not in df_interval.columns:
         return []

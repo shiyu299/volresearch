@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import json
@@ -48,6 +48,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--input-dir", default="data/derived/TA")
     p.add_argument("--glob", default="*.parquet")
     p.add_argument("--atm-n", type=int, default=15)
+    p.add_argument("--pool-refresh-seconds", type=int, default=120)
+    p.add_argument("--pool-refresh-fut-move", type=float, default=0.0)
     p.add_argument("--conf-thr", type=float, default=0.20)
     p.add_argument("--min-train", type=int, default=3600)
     p.add_argument("--fit-steps", type=int, default=120)
@@ -80,7 +82,53 @@ def minutes_from_session_open(ts: pd.Timestamp) -> float:
     return np.nan
 
 
-def build_second_panel(raw: pd.DataFrame, atm_n: int, source_name: str) -> pd.DataFrame:
+def _pick_pool_symbols(meta: pd.DataFrame, f_now: float, n: int) -> list[str]:
+    if meta.empty or not np.isfinite(f_now):
+        return []
+    ks = meta["K"].astype(float).to_numpy()
+    atm_k = float(meta.iloc[np.argmin(np.abs(ks - f_now))]["K"])
+    atm_rows = meta[meta["K"].astype(float) == atm_k]
+    picked = list(atm_rows["symbol"].astype(str).unique())
+    if len(picked) >= n:
+        return picked[:n]
+
+    rest = meta[~meta["symbol"].isin(picked)].copy()
+    if "cp" in rest.columns:
+        cp = rest["cp"].astype(str).str.upper()
+        is_call = cp.str.startswith("C")
+        is_put = cp.str.startswith("P")
+        k = rest["K"].astype(float)
+        rest = rest[((is_call) & (k >= f_now)) | ((is_put) & (k <= f_now))]
+
+    rest["dist"] = (rest["K"].astype(float) - f_now).abs()
+    rest = rest.sort_values(["dist", "K"])
+    for sym in rest["symbol"].astype(str).tolist():
+        if sym not in picked:
+            picked.append(sym)
+        if len(picked) >= n:
+            break
+    return picked
+
+
+def _grace_weight(elapsed_seconds: float) -> float:
+    if not np.isfinite(elapsed_seconds):
+        return 0.0
+    if elapsed_seconds >= 300.0:
+        return 0.0
+    if elapsed_seconds >= 240.0:
+        return 0.25
+    if elapsed_seconds >= 120.0:
+        return 0.5
+    return 1.0
+
+
+def build_second_panel(
+    raw: pd.DataFrame,
+    atm_n: int,
+    source_name: str,
+    pool_refresh_seconds: int,
+    pool_refresh_fut_move: float,
+) -> pd.DataFrame:
     raw = raw.sort_values("dt_exch").copy()
 
     fut = raw[raw["is_future"] == True].copy()
@@ -93,25 +141,123 @@ def build_second_panel(raw: pd.DataFrame, atm_n: int, source_name: str) -> pd.Da
     raw = raw[raw["sec"].map(two_sided).fillna(False)].copy()
 
     opt = raw[raw["is_option"] == True].copy()
-    opt = opt.dropna(subset=["iv", "F_used", "K"])
-    opt["dist"] = (opt["K"] - opt["F_used"]).abs()
-    nearest = opt.sort_values(["sec", "dist"]).groupby("sec", as_index=False).head(atm_n)
+    opt = opt.dropna(subset=["F_used", "K"]).copy()
+    if opt.empty:
+        return pd.DataFrame()
 
-    def _agg(g: pd.DataFrame) -> pd.Series:
-        w = np.clip(g["vega"].fillna(0), 0, None)
-        if len(g) == 0:
-            return pd.Series({"iv_pool": np.nan, "flow": 0.0, "F_used": np.nan})
-        iv = float(np.average(g["iv"], weights=w)) if w.sum() > 0 else float(g["iv"].mean())
-        return pd.Series(
+    meta_cols = ["symbol", "K"]
+    if "cp" in opt.columns:
+        meta_cols.append("cp")
+    meta = opt[meta_cols].drop_duplicates(subset=["symbol"]).copy()
+
+    last_quote = (
+        opt.sort_values("dt_exch")
+        .groupby(["sec", "symbol"], as_index=False)
+        .tail(1)
+        .set_index(["sec", "symbol"])
+    )
+
+    sec_index = pd.DatetimeIndex(sorted(raw["sec"].dropna().unique()))
+    f_series = (
+        raw[["sec", "F_used"]]
+        .dropna()
+        .groupby("sec")["F_used"]
+        .last()
+        .sort_index()
+        .reindex(sec_index)
+        .ffill()
+    )
+
+    refresh_td = pd.Timedelta(seconds=max(int(pool_refresh_seconds), 0))
+    next_refresh_time = None
+    last_pool_f = np.nan
+    pool_syms: list[str] = []
+    pool_exit_since: dict[str, pd.Timestamp] = {}
+    rows: list[dict] = []
+
+    for bt in sec_index:
+        f_now = float(f_series.loc[bt]) if bt in f_series.index else np.nan
+        if not np.isfinite(f_now):
+            continue
+
+        refresh_by_time = (next_refresh_time is None) or (int(pool_refresh_seconds) == 0) or (bt >= next_refresh_time)
+        refresh_by_f_move = (
+            np.isfinite(float(pool_refresh_fut_move))
+            and float(pool_refresh_fut_move) > 0.0
+            and np.isfinite(float(last_pool_f))
+            and abs(float(f_now) - float(last_pool_f)) >= float(pool_refresh_fut_move)
+        )
+        if refresh_by_time or refresh_by_f_move:
+            prev_pool_set = set(pool_syms)
+            pool_syms = _pick_pool_symbols(meta, f_now, int(atm_n))
+            cur_pool_set = set(pool_syms)
+
+            for sym in cur_pool_set:
+                pool_exit_since.pop(sym, None)
+            for sym in prev_pool_set - cur_pool_set:
+                if sym not in pool_exit_since:
+                    pool_exit_since[sym] = pd.Timestamp(bt)
+
+            expired = []
+            for sym, exit_ts in pool_exit_since.items():
+                if _grace_weight((pd.Timestamp(bt) - pd.Timestamp(exit_ts)).total_seconds()) <= 0.0:
+                    expired.append(sym)
+            for sym in expired:
+                pool_exit_since.pop(sym, None)
+
+            next_refresh_time = bt + refresh_td if int(pool_refresh_seconds) > 0 else pd.Timestamp.max
+            last_pool_f = float(f_now)
+
+        active_syms = list(pool_syms)
+        for sym, exit_ts in pool_exit_since.items():
+            mult = _grace_weight((pd.Timestamp(bt) - pd.Timestamp(exit_ts)).total_seconds())
+            if mult > 0.0 and sym not in active_syms:
+                active_syms.append(sym)
+
+        used_iv = []
+        used_w = []
+        flow_sum = 0.0
+        n_used = 0
+        n_grace = 0
+        for sym in active_syms:
+            key = (bt, sym)
+            if key not in last_quote.index:
+                continue
+            row = last_quote.loc[key]
+            iv_val = float(row.get("iv", np.nan))
+            vega_val = float(row.get("vega", np.nan))
+            decay_mult = 1.0 if sym in pool_syms else _grace_weight((pd.Timestamp(bt) - pd.Timestamp(pool_exit_since.get(sym))).total_seconds())
+            if not np.isfinite(iv_val) or iv_val <= 0 or not np.isfinite(vega_val) or vega_val <= 0 or decay_mult <= 0.0:
+                continue
+            used_iv.append(iv_val)
+            used_w.append(vega_val * decay_mult)
+            flow_val = float(row.get("traded_vega_signed", 0.0))
+            if np.isfinite(flow_val):
+                flow_sum += flow_val
+            n_used += 1
+            if decay_mult < 0.999:
+                n_grace += 1
+
+        if len(used_iv) == 0:
+            continue
+
+        w = np.asarray(used_w, dtype=float)
+        iv = float(np.average(np.asarray(used_iv, dtype=float), weights=w)) if np.nansum(w) > 1e-12 else float(np.mean(used_iv))
+        rows.append(
             {
+                "dt_exch": pd.Timestamp(bt),
                 "iv_pool": iv,
-                "flow": g["traded_vega_signed"].fillna(0).sum(),
-                "F_used": g["F_used"].dropna().iloc[-1] if g["F_used"].notna().any() else np.nan,
+                "flow": float(flow_sum),
+                "F_used": float(f_now),
+                "pool_n": int(len(pool_syms)),
+                "used_n": int(n_used),
+                "grace_n": int(n_grace),
             }
         )
 
-    sec = nearest.groupby("sec").apply(_agg).reset_index().rename(columns={"sec": "dt_exch"})
-    sec = sec.sort_values("dt_exch").dropna(subset=["iv_pool"]).copy()
+    sec = pd.DataFrame(rows).sort_values("dt_exch").dropna(subset=["iv_pool"]).copy()
+    if sec.empty:
+        return sec
 
     iv = sec["iv_pool"]
     flow = sec["flow"].fillna(0.0)
@@ -363,13 +509,27 @@ def run_online_backtest(panels: list[pd.DataFrame], args: argparse.Namespace, ou
     }
 
 
-def load_panels(input_dir: Path, pattern: str, atm_n: int) -> list[pd.DataFrame]:
+def load_panels(
+    input_dir: Path,
+    pattern: str,
+    atm_n: int,
+    pool_refresh_seconds: int,
+    pool_refresh_fut_move: float,
+) -> list[pd.DataFrame]:
     files = sorted(input_dir.rglob(pattern))
     panels: list[pd.DataFrame] = []
     for fp in files:
         raw = pd.read_parquet(fp)
         raw["dt_exch"] = pd.to_datetime(raw["dt_exch"])
-        panels.append(build_second_panel(raw, atm_n=atm_n, source_name=fp.name))
+        panels.append(
+            build_second_panel(
+                raw,
+                atm_n=atm_n,
+                source_name=fp.name,
+                pool_refresh_seconds=pool_refresh_seconds,
+                pool_refresh_fut_move=pool_refresh_fut_move,
+            )
+        )
     return panels
 
 
@@ -379,7 +539,13 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    panels = load_panels(input_dir, args.glob, args.atm_n)
+    panels = load_panels(
+        input_dir,
+        args.glob,
+        args.atm_n,
+        args.pool_refresh_seconds,
+        args.pool_refresh_fut_move,
+    )
     pred_df, summary = run_online_backtest(panels, args, out_dir)
 
     pred_path = out_dir / "ta_v15_predictions.parquet"
@@ -394,6 +560,8 @@ def main() -> None:
             "input_dir": str(input_dir),
             "glob": args.glob,
             "atm_n": args.atm_n,
+            "pool_refresh_seconds": args.pool_refresh_seconds,
+            "pool_refresh_fut_move": args.pool_refresh_fut_move,
             "conf_thr": args.conf_thr,
             "min_train": args.min_train,
             "fit_steps": args.fit_steps,
@@ -405,6 +573,7 @@ def main() -> None:
             "predict_gate": "predict only from 5 minutes after each 21:00 / 09:00 / 13:30 open",
             "warmup_policy": "first run requires min_train labeled samples; later days continue with persisted in-memory model",
             "filter": "remove one-sided future seconds",
+            "pool_rule": "ATM strike forced in, non-ATM OTM only, refresh by seconds or |ΔF|, 5min exit grace decay",
         },
         "metrics": summary["overall"],
         "daily_metrics": summary["daily"],
