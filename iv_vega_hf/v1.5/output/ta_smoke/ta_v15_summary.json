@@ -1,0 +1,45 @@
+{
+  "config": {
+    "input_dir": "data\\derived\\TA",
+    "glob": "TA605310.parquet",
+    "atm_n": 15,
+    "conf_thr": 0.2,
+    "min_train": 3600,
+    "fit_steps": 120,
+    "online_steps": 1,
+    "lr": 0.03,
+    "l2": 0.001,
+    "label": "mean(IV[t+3m:t+5m]) - IV[t]",
+    "train_gate": "exclude first 3 minutes after each 21:00 / 09:00 / 13:30 open",
+    "predict_gate": "predict only from 5 minutes after each 21:00 / 09:00 / 13:30 open",
+    "warmup_policy": "first run requires min_train labeled samples; later days continue with persisted in-memory model",
+    "filter": "remove one-sided future seconds"
+  },
+  "metrics": {
+    "n": 15484,
+    "n_sig": 12158,
+    "all_hit": 0.6286489279256006,
+    "triggered_hit": 0.655453199539398,
+    "coverage": 0.7851976233531387,
+    "avg_vol_decimal": 0.013158374777771466,
+    "avg_vol_points": 1.3158374777771467
+  },
+  "daily_metrics": [
+    {
+      "source_file": "TA605310.parquet",
+      "trade_date": "2026-03-10",
+      "n": 15484,
+      "n_sig": 12158,
+      "all_hit": 0.6286489279256006,
+      "triggered_hit": 0.655453199539398,
+      "coverage": 0.7851976233531387,
+      "avg_vol_decimal": 0.013158374777771466,
+      "avg_vol_points": 1.3158374777771467
+    }
+  ],
+  "artifacts": {
+    "predictions": "iv_vega_hf\\v1.5\\output\\ta_smoke\\ta_v15_predictions.parquet",
+    "daily_summary": "iv_vega_hf\\v1.5\\output\\ta_smoke\\ta_v15_daily_summary.parquet",
+    "models_dir": "iv_vega_hf\\v1.5\\output\\ta_smoke\\models"
+  }
+}

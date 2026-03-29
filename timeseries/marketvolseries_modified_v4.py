@@ -147,6 +147,7 @@ def _session_code(dt: pd.Timestamp) -> str:
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RAW_DATA_DIR = REPO_ROOT / "data" / "raw"
 DERIVED_DATA_DIR = REPO_ROOT / "data" / "derived"
+CSV_RE = re.compile(r"^(?P<product>[A-Za-z]+)(?P<series>\d{6})\.csv$")
 
 
 def _resolve_repo_path(path_like) -> Path:
@@ -154,6 +155,29 @@ def _resolve_repo_path(path_like) -> Path:
     if path.is_absolute():
         return path
     return REPO_ROOT / path
+
+
+def discover_raw_csvs(raw_root: Path) -> list[Path]:
+    return sorted(
+        csv_path
+        for csv_path in raw_root.rglob("*.csv")
+        if csv_path.is_file() and CSV_RE.match(csv_path.name)
+    )
+
+
+def infer_product_and_underlying(csv_path: Path) -> tuple[str, str]:
+    match = CSV_RE.match(csv_path.name)
+    if not match:
+        raise ValueError(f"Unsupported csv filename: {csv_path.name}")
+    product = match.group("product").upper()
+    series = match.group("series")
+    underlying = f"{product}{series[:-3]}"
+    return product, underlying
+
+
+def derived_output_path_for_csv(csv_path: Path, derived_root: Path = DERIVED_DATA_DIR) -> Path:
+    product, _ = infer_product_and_underlying(csv_path)
+    return derived_root / product / f"{csv_path.stem}.parquet"
 
 
 def run_pl603_iv_traded_v4(
@@ -418,12 +442,70 @@ def run_pl603_iv_traded_v4(
     return out
 
 
+def generate_missing_derived_datasets(
+    raw_root=RAW_DATA_DIR,
+    derived_root=DERIVED_DATA_DIR,
+    expiry_date="2026-04-13",
+    spread_limit=25.0,
+    r=0.0,
+    day_count=365.0,
+    tz_exchange="Asia/Shanghai",
+):
+    raw_root = _resolve_repo_path(raw_root)
+    derived_root = _resolve_repo_path(derived_root)
+
+    csv_paths = discover_raw_csvs(raw_root)
+    generated: list[Path] = []
+    existing: list[Path] = []
+
+    if not csv_paths:
+        print(f"No matching CSV files found under {raw_root}")
+        return generated
+
+    print(f"Found {len(csv_paths)} raw CSV files under {raw_root}")
+    for idx, csv_path in enumerate(csv_paths, start=1):
+        out_path = derived_output_path_for_csv(csv_path, derived_root=derived_root)
+        if out_path.exists():
+            existing.append(out_path)
+            continue
+
+        product, underlying = infer_product_and_underlying(csv_path)
+        print(f"[{idx}/{len(csv_paths)}] generate {csv_path} -> {out_path}")
+        run_pl603_iv_traded_v4(
+            csv_path=csv_path,
+            underlying=underlying,
+            expiry_date=expiry_date,
+            spread_limit=spread_limit,
+            r=r,
+            day_count=day_count,
+            tz_exchange=tz_exchange,
+            out_path=out_path,
+            out_csv_preview_path=None,
+        )
+        generated.append(out_path)
+
+    print(f"Existing derived files: {len(existing)}")
+    print(f"Newly generated derived files: {len(generated)}")
+    if generated:
+        print("Generated content:")
+        for path in generated:
+            print(f" - {path}")
+    else:
+        print("Generated content: []")
+
+    return generated
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build modified-v4 option/futures dataset.")
+    parser.add_argument("--scan-missing", action="store_true", help="Scan data/raw recursively and only generate missing parquet files under data/derived.")
+    parser.add_argument("--single-run", action="store_true", help="Run a single csv file with explicit csv/underlying/out-path arguments.")
+    parser.add_argument("--raw-root", default=str(RAW_DATA_DIR))
+    parser.add_argument("--derived-root", default=str(DERIVED_DATA_DIR))
     parser.add_argument("--csv-path", default=str(RAW_DATA_DIR / "PL26.csv"))
     parser.add_argument("--underlying", default="PL605")
     parser.add_argument("--expiry-date", default="2026-04-13")
-    parser.add_argument("--spread-limit", type=float, default=25.0)
+    parser.add_argument("--spread-limit", type=float, default=15.0)
     parser.add_argument("--r", type=float, default=0.0)
     parser.add_argument("--day-count", type=float, default=365.0)
     parser.add_argument("--tz-exchange", default="Asia/Shanghai")
@@ -432,16 +514,31 @@ if __name__ == "__main__":
     parser.add_argument("--csv-preview-n", type=int, default=5000)
     args = parser.parse_args()
 
-    out = run_pl603_iv_traded_v4(
-        csv_path=args.csv_path,
-        underlying=args.underlying,
-        expiry_date=args.expiry_date,
-        spread_limit=args.spread_limit,
-        r=args.r,
-        day_count=args.day_count,
-        tz_exchange=args.tz_exchange,
-        out_path=args.out_path,
-        out_csv_preview_path=args.out_csv_preview_path,
-        csv_preview_n=args.csv_preview_n,
-    )
-    print("done ->" + str(args.out_path) + f" ({len(out)} rows)")
+    # Default behavior: scan data/raw and fill missing data/derived.
+    # Keep --single-run for explicit one-file processing.
+    run_scan_mode = args.scan_missing or (not args.single_run)
+    if run_scan_mode:
+        generated = generate_missing_derived_datasets(
+            raw_root=args.raw_root,
+            derived_root=args.derived_root,
+            expiry_date=args.expiry_date,
+            spread_limit=args.spread_limit,
+            r=args.r,
+            day_count=args.day_count,
+            tz_exchange=args.tz_exchange,
+        )
+        print(f"done -> generated {len(generated)} files")
+    else:
+        out = run_pl603_iv_traded_v4(
+            csv_path=args.csv_path,
+            underlying=args.underlying,
+            expiry_date=args.expiry_date,
+            spread_limit=args.spread_limit,
+            r=args.r,
+            day_count=args.day_count,
+            tz_exchange=args.tz_exchange,
+            out_path=args.out_path,
+            out_csv_preview_path=args.out_csv_preview_path,
+            csv_preview_n=args.csv_preview_n,
+        )
+        print("done ->" + str(args.out_path) + f" ({len(out)} rows)")

@@ -29,21 +29,8 @@ def build_factor_base_frame(df_raw: pd.DataFrame, symbol: str, base_rule: str) -
     return out.set_index("dt_exch", drop=True)
 
 
-def _factor_abs_traded_vega(df: pd.DataFrame) -> pd.Series:
-    return df.get("abs_traded_vega", pd.Series(index=df.index, dtype=float))
-
-
-def _factor_opt_spread_60s(df: pd.DataFrame) -> pd.Series:
-    return df.get("opt_spread_60s", pd.Series(index=df.index, dtype=float))
-
-
 def _factor_no_trade_move_60(df: pd.DataFrame) -> pd.Series:
     return df.get("no_trade_move_60", pd.Series(index=df.index, dtype=float))
-
-
-def _factor_iv_f_div_60_abs(df: pd.DataFrame) -> pd.Series:
-    s = df.get("iv_f_div_60", pd.Series(index=df.index, dtype=float))
-    return s.abs()
 
 
 def _factor_vcr_divergence(df: pd.DataFrame) -> pd.Series:
@@ -58,41 +45,13 @@ def _factor_vcr_divergence_reversal(df: pd.DataFrame) -> pd.Series:
     return df.get("vcr_divergence_reversal", pd.Series(index=df.index, dtype=float))
 
 
-def _factor_iv_chg_20s_abs(df: pd.DataFrame) -> pd.Series:
-    return df.get("iv_chg_20s_abs", pd.Series(index=df.index, dtype=float))
-
-
 FACTOR_REGISTRY: Dict[str, FactorDef] = {
-    "abs_traded_vega": FactorDef(
-        factor_id="abs_traded_vega",
-        label="abs_traded_vega(单合约)",
-        description="单合约绝对成交vega",
-        compute=_factor_abs_traded_vega,
-        default_q=0.95,
-        default_op=">=",
-    ),
-    "opt_spread_60s": FactorDef(
-        factor_id="opt_spread_60s",
-        label="opt_spread_60s",
-        description="60秒期权中位价差",
-        compute=_factor_opt_spread_60s,
-        default_q=0.80,
-        default_op=">=",
-    ),
     "no_trade_move_60": FactorDef(
         factor_id="no_trade_move_60",
         label="no_trade_move_60",
         description="60秒无量波动指标",
         compute=_factor_no_trade_move_60,
         default_q=0.80,
-        default_op=">=",
-    ),
-    "iv_f_div_60_abs": FactorDef(
-        factor_id="iv_f_div_60_abs",
-        label="abs(iv_f_div_60)",
-        description="60秒IV-F背离绝对值",
-        compute=_factor_iv_f_div_60_abs,
-        default_q=0.85,
         default_op=">=",
     ),
     "vcr_divergence": FactorDef(
@@ -116,14 +75,6 @@ FACTOR_REGISTRY: Dict[str, FactorDef] = {
         label="vcr_divergence_reversal",
         description="vcr_divergence with fut reversal filter: (Ft-Ft-10s)*(Ft-10s-Ft-10min)<0",
         compute=_factor_vcr_divergence_reversal,
-        default_q=0.90,
-        default_op=">=",
-    ),
-    "iv_chg_20s_abs": FactorDef(
-        factor_id="iv_chg_20s_abs",
-        label="abs(iv_chg_20s)",
-        description="20秒IV变动绝对值",
-        compute=_factor_iv_chg_20s_abs,
         default_q=0.90,
         default_op=">=",
     ),

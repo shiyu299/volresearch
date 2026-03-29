@@ -1,0 +1,30 @@
+{
+  "config": {
+    "input": "/Users/shiyu/.openclaw/workspace/volresearch/data/derived/sc2604_iv_20260313.parquet",
+    "atm_n": 15,
+    "conf_thr": 0.15,
+    "min_train": 30,
+    "factor_freq": "5min",
+    "trigger_freq": "1s",
+    "label": "iv_pool(t+5m)-iv_pool(t)",
+    "filter": "exclude one-sided future seconds"
+  },
+  "metrics_second_trigger": {
+    "n": 16544,
+    "n_sig": 4834,
+    "all_hit": 0.5341513539651838,
+    "triggered_hit": 0.3721555647496897,
+    "coverage": 0.2921905222437137,
+    "avg_vol_decimal": -0.0017534967649195635,
+    "avg_vol_points": -0.17534967649195635
+  },
+  "metrics_5m_trigger": {
+    "n": 62,
+    "n_sig": 18,
+    "all_hit": 0.532258064516129,
+    "triggered_hit": 0.3888888888888889,
+    "coverage": 0.2903225806451613,
+    "avg_vol_decimal": -0.0023253345330487285,
+    "avg_vol_points": -0.23253345330487285
+  }
+}

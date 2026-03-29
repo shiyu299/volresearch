@@ -1,0 +1,65 @@
+{
+  "horizon": 5,
+  "conf_thr": 0.15,
+  "base_features": [
+    "flow",
+    "iv_dev_ema5_ratio",
+    "iv_mom3",
+    "iv_willr10",
+    "resid_z"
+  ],
+  "second_batch_candidates": [
+    "flow_ema10",
+    "shockF"
+  ],
+  "base_metrics": {
+    "n": 374,
+    "n_sig": 93,
+    "all_hit": 0.5721925133689839,
+    "triggered_hit": 0.6451612903225806,
+    "coverage": 0.24866310160427807,
+    "avg_vol_decimal": 0.009683660225449767,
+    "avg_vol_points": 0.9683660225449766
+  },
+  "add_one_metrics": {
+    "flow_ema10": {
+      "n": 374,
+      "n_sig": 93,
+      "all_hit": 0.6042780748663101,
+      "triggered_hit": 0.6666666666666666,
+      "coverage": 0.24866310160427807,
+      "avg_vol_decimal": 0.007780908036862511,
+      "avg_vol_points": 0.778090803686251
+    },
+    "shockF": {
+      "n": 374,
+      "n_sig": 106,
+      "all_hit": 0.5909090909090909,
+      "triggered_hit": 0.6509433962264151,
+      "coverage": 0.28342245989304815,
+      "avg_vol_decimal": 0.007872514162445374,
+      "avg_vol_points": 0.7872514162445374
+    }
+  },
+  "final_keep": [
+    "flow",
+    "iv_dev_ema5_ratio",
+    "iv_mom3",
+    "iv_willr10",
+    "resid_z",
+    "flow_ema10",
+    "shockF"
+  ],
+  "final_metrics": {
+    "n": 374,
+    "n_sig": 106,
+    "all_hit": 0.6042780748663101,
+    "triggered_hit": 0.6698113207547169,
+    "coverage": 0.28342245989304815,
+    "avg_vol_decimal": 0.008090775977258583,
+    "avg_vol_points": 0.8090775977258583
+  },
+  "artifacts": {
+    "factors_targets": "/Users/shiyu/.openclaw/workspace/iv_vega_hf/data/sc_pipeline/sc_factors_targets.parquet"
+  }
+}

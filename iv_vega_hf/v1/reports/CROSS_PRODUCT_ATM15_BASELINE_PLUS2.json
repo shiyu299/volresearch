@@ -1,0 +1,159 @@
+{
+  "atm_n": 15,
+  "horizon": 5,
+  "conf_thr": 0.15,
+  "products": {
+    "TA": {
+      "baseline": {
+        "n": 656,
+        "n_sig": 65,
+        "all_hit": 0.5152439024390244,
+        "triggered_hit": 0.7384615384615385,
+        "coverage": 0.09908536585365854,
+        "avg_vol_decimal": 0.006470723777897147,
+        "avg_vol_points": 0.6470723777897147
+      },
+      "plus_flow_ema10": {
+        "n": 656,
+        "n_sig": 64,
+        "all_hit": 0.5091463414634146,
+        "triggered_hit": 0.71875,
+        "coverage": 0.0975609756097561,
+        "avg_vol_decimal": 0.00640649475746548,
+        "avg_vol_points": 0.640649475746548
+      },
+      "plus_shockF": {
+        "n": 656,
+        "n_sig": 149,
+        "all_hit": 0.5396341463414634,
+        "triggered_hit": 0.6510067114093959,
+        "coverage": 0.22713414634146342,
+        "avg_vol_decimal": 0.0039028162122922644,
+        "avg_vol_points": 0.39028162122922644
+      },
+      "plus_both": {
+        "n": 656,
+        "n_sig": 141,
+        "all_hit": 0.5457317073170732,
+        "triggered_hit": 0.6312056737588653,
+        "coverage": 0.2149390243902439,
+        "avg_vol_decimal": 0.003515755617808693,
+        "avg_vol_points": 0.3515755617808693
+      }
+    },
+    "MA": {
+      "baseline": {
+        "n": 1241,
+        "n_sig": 326,
+        "all_hit": 0.6003223207091055,
+        "triggered_hit": 0.7147239263803681,
+        "coverage": 0.2626913779210314,
+        "avg_vol_decimal": 0.00444217004002659,
+        "avg_vol_points": 0.444217004002659
+      },
+      "plus_flow_ema10": {
+        "n": 1241,
+        "n_sig": 328,
+        "all_hit": 0.6003223207091055,
+        "triggered_hit": 0.7073170731707317,
+        "coverage": 0.26430298146655923,
+        "avg_vol_decimal": 0.004323767255643781,
+        "avg_vol_points": 0.4323767255643781
+      },
+      "plus_shockF": {
+        "n": 1241,
+        "n_sig": 370,
+        "all_hit": 0.6003223207091055,
+        "triggered_hit": 0.7108108108108108,
+        "coverage": 0.29814665592264306,
+        "avg_vol_decimal": 0.004322221373177913,
+        "avg_vol_points": 0.43222213731779136
+      },
+      "plus_both": {
+        "n": 1241,
+        "n_sig": 374,
+        "all_hit": 0.5922643029814666,
+        "triggered_hit": 0.7165775401069518,
+        "coverage": 0.3013698630136986,
+        "avg_vol_decimal": 0.004430737936806774,
+        "avg_vol_points": 0.4430737936806774
+      }
+    },
+    "FG": {
+      "baseline": {
+        "n": 1245,
+        "n_sig": 723,
+        "all_hit": 0.6706827309236948,
+        "triggered_hit": 0.7648686030428768,
+        "coverage": 0.5807228915662651,
+        "avg_vol_decimal": 0.006801890459139097,
+        "avg_vol_points": 0.6801890459139097
+      },
+      "plus_flow_ema10": {
+        "n": 1245,
+        "n_sig": 721,
+        "all_hit": 0.6690763052208836,
+        "triggered_hit": 0.768377253814147,
+        "coverage": 0.5791164658634538,
+        "avg_vol_decimal": 0.006872132034416743,
+        "avg_vol_points": 0.6872132034416744
+      },
+      "plus_shockF": {
+        "n": 1245,
+        "n_sig": 721,
+        "all_hit": 0.6706827309236948,
+        "triggered_hit": 0.7669902912621359,
+        "coverage": 0.5791164658634538,
+        "avg_vol_decimal": 0.006816416613440789,
+        "avg_vol_points": 0.6816416613440789
+      },
+      "plus_both": {
+        "n": 1245,
+        "n_sig": 720,
+        "all_hit": 0.6666666666666666,
+        "triggered_hit": 0.7680555555555556,
+        "coverage": 0.5783132530120482,
+        "avg_vol_decimal": 0.0068605804837132914,
+        "avg_vol_points": 0.6860580483713291
+      }
+    },
+    "SH": {
+      "baseline": {
+        "n": 1223,
+        "n_sig": 168,
+        "all_hit": 0.5821749795584628,
+        "triggered_hit": 0.625,
+        "coverage": 0.1373671300081766,
+        "avg_vol_decimal": 0.0018101533088834636,
+        "avg_vol_points": 0.18101533088834637
+      },
+      "plus_flow_ema10": {
+        "n": 1223,
+        "n_sig": 195,
+        "all_hit": 0.5878986099754702,
+        "triggered_hit": 0.6,
+        "coverage": 0.15944399018806213,
+        "avg_vol_decimal": 0.0016782106596616164,
+        "avg_vol_points": 0.16782106596616164
+      },
+      "plus_shockF": {
+        "n": 1223,
+        "n_sig": 189,
+        "all_hit": 0.5813573180703189,
+        "triggered_hit": 0.6243386243386243,
+        "coverage": 0.1545380212591987,
+        "avg_vol_decimal": 0.002429645275822968,
+        "avg_vol_points": 0.2429645275822968
+      },
+      "plus_both": {
+        "n": 1223,
+        "n_sig": 224,
+        "all_hit": 0.5846279640228945,
+        "triggered_hit": 0.5982142857142857,
+        "coverage": 0.18315617334423548,
+        "avg_vol_decimal": 0.0019417041033422695,
+        "avg_vol_points": 0.19417041033422694
+      }
+    }
+  }
+}

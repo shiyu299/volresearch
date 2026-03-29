@@ -33,6 +33,12 @@ def _normalize_data_path(data_path: str | Path) -> Path:
 
 def factor_store_dir_for_data(data_path: str | Path) -> Path:
     src = _normalize_data_path(data_path)
+    derived_root = (REPO_ROOT / "data" / "derived").resolve()
+    if derived_root in src.parents:
+        rel_parent = src.relative_to(derived_root).parent
+        if str(rel_parent) == ".":
+            return FACTOR_DATA_DIR / src.stem
+        return FACTOR_DATA_DIR / rel_parent / src.stem
     return FACTOR_DATA_DIR / src.stem
 
 

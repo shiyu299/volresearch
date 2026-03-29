@@ -1,0 +1,133 @@
+{
+  "config": {
+    "input_dir": "data\\derived\\FG",
+    "glob": "*.parquet",
+    "atm_n": 15,
+    "conf_thr": 0.2,
+    "min_train": 3600,
+    "fit_steps": 120,
+    "online_steps": 1,
+    "lr": 0.03,
+    "l2": 0.001,
+    "label": "mean(IV[t+3m:t+5m]) - IV[t]",
+    "train_gate": "exclude first 3 minutes after each 21:00 / 09:00 / 13:30 open",
+    "predict_gate": "predict only from 5 minutes after each 21:00 / 09:00 / 13:30 open",
+    "warmup_policy": "first run requires min_train labeled samples; later days continue with persisted in-memory model",
+    "filter": "remove one-sided future seconds"
+  },
+  "metrics": {
+    "n": 158062,
+    "n_sig": 136746,
+    "all_hit": 0.8746061672002126,
+    "triggered_hit": 0.9186740379974552,
+    "coverage": 0.8651415267426706,
+    "avg_vol_decimal": 0.038094040859240175,
+    "avg_vol_points": 3.8094040859240175
+  },
+  "daily_metrics": [
+    {
+      "source_file": "FG605310.parquet",
+      "trade_date": "2026-03-10",
+      "n": 14458,
+      "n_sig": 12328,
+      "all_hit": 0.8903721123253562,
+      "triggered_hit": 0.9373783257624919,
+      "coverage": 0.8526767187716143,
+      "avg_vol_decimal": 0.05414746746651838,
+      "avg_vol_points": 5.414746746651837
+    },
+    {
+      "source_file": "FG605311.parquet",
+      "trade_date": "2026-03-11",
+      "n": 18380,
+      "n_sig": 15860,
+      "all_hit": 0.8900979325353645,
+      "triggered_hit": 0.9322824716267339,
+      "coverage": 0.8628944504896626,
+      "avg_vol_decimal": 0.04510923267362715,
+      "avg_vol_points": 4.510923267362715
+    },
+    {
+      "source_file": "FG605312.parquet",
+      "trade_date": "2026-03-12",
+      "n": 19243,
+      "n_sig": 16681,
+      "all_hit": 0.8271059606090526,
+      "triggered_hit": 0.869132546010431,
+      "coverage": 0.8668606766096763,
+      "avg_vol_decimal": 0.031490712492354425,
+      "avg_vol_points": 3.1490712492354427
+    },
+    {
+      "source_file": "FG605313.parquet",
+      "trade_date": "2026-03-13",
+      "n": 19164,
+      "n_sig": 16277,
+      "all_hit": 0.8822792736380713,
+      "triggered_hit": 0.9317441789027462,
+      "coverage": 0.8493529534543937,
+      "avg_vol_decimal": 0.030764063537918166,
+      "avg_vol_points": 3.0764063537918167
+    },
+    {
+      "source_file": "FG605316.parquet",
+      "trade_date": "2026-03-16",
+      "n": 12365,
+      "n_sig": 10827,
+      "all_hit": 0.865992721391023,
+      "triggered_hit": 0.9069917798097349,
+      "coverage": 0.8756166599272139,
+      "avg_vol_decimal": 0.033546446236617435,
+      "avg_vol_points": 3.3546446236617435
+    },
+    {
+      "source_file": "FG605317.parquet",
+      "trade_date": "2026-03-17",
+      "n": 18740,
+      "n_sig": 16307,
+      "all_hit": 0.8931163287086447,
+      "triggered_hit": 0.9374501747715704,
+      "coverage": 0.87017075773746,
+      "avg_vol_decimal": 0.03783038131957792,
+      "avg_vol_points": 3.783038131957792
+    },
+    {
+      "source_file": "FG605318.parquet",
+      "trade_date": "2026-03-18",
+      "n": 18708,
+      "n_sig": 16463,
+      "all_hit": 0.8747060081248663,
+      "triggered_hit": 0.9166008625402418,
+      "coverage": 0.8799978618772718,
+      "avg_vol_decimal": 0.038109081655698956,
+      "avg_vol_points": 3.8109081655698955
+    },
+    {
+      "source_file": "FG605319.parquet",
+      "trade_date": "2026-03-19",
+      "n": 18672,
+      "n_sig": 16295,
+      "all_hit": 0.8703406169665809,
+      "triggered_hit": 0.9116293341515802,
+      "coverage": 0.872697086546701,
+      "avg_vol_decimal": 0.03855212052316039,
+      "avg_vol_points": 3.8552120523160394
+    },
+    {
+      "source_file": "FG605320.parquet",
+      "trade_date": "2026-03-20",
+      "n": 18332,
+      "n_sig": 15708,
+      "all_hit": 0.8796094261400829,
+      "triggered_hit": 0.9273618538324421,
+      "coverage": 0.8568623172594371,
+      "avg_vol_decimal": 0.03593697785269605,
+      "avg_vol_points": 3.5936977852696046
+    }
+  ],
+  "artifacts": {
+    "predictions": "iv_vega_hf\\v1.5\\output\\fg_full\\ta_v15_predictions.parquet",
+    "daily_summary": "iv_vega_hf\\v1.5\\output\\fg_full\\ta_v15_daily_summary.parquet",
+    "models_dir": "iv_vega_hf\\v1.5\\output\\fg_full\\models"
+  }
+}

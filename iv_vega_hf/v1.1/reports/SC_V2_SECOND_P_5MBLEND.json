@@ -1,0 +1,20 @@
+{
+  "config": {
+    "atm_n": 15,
+    "conf_thr": 0.2,
+    "min_train": 3600,
+    "trigger_freq": "1s",
+    "feature_context": "past 5min blended from second data",
+    "label": "mean(IV[t+3m:t+5m]) - IV[t]",
+    "filter": "remove one-sided future seconds"
+  },
+  "metrics": {
+    "n": 28943,
+    "n_sig": 5963,
+    "all_hit": 0.665376775040597,
+    "triggered_hit": 0.8346469897702499,
+    "coverage": 0.20602563659606812,
+    "avg_vol_decimal": 0.019532328791754545,
+    "avg_vol_points": 1.9532328791754545
+  }
+}

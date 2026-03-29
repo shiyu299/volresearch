@@ -1,0 +1,15 @@
+name: st
+channels:
+  - defaults
+dependencies:
+  - python=3.9
+  - pip
+  - pip:
+    - streamlit==1.50.0
+    - pandas==2.3.3
+    - numpy==2.0.2
+    - matplotlib==3.9.4
+    - plotly==6.5.2
+    - openpyxl==3.1.5
+    - pyarrow==21.0.0
+    - duckdb
