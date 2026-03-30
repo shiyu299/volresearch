@@ -92,11 +92,15 @@ def implied_vol_newton(
 
 
 # ========= symbol parse =========
-_opt_re = re.compile(r"^(?P<under>.*?)(?P<cp>[CP])(?P<strike>\d+(?:\.\d+)?)$")
+_opt_re = re.compile(r"^(?P<under>[A-Z]+\d+)(?P<cp>[CP])(?P<strike>\d+(?:\.\d+)?)$")
+
+
+def normalize_contract_symbol(sym: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(sym).upper())
 
 
 def parse_option_symbol(sym: str):
-    m = _opt_re.match(sym)
+    m = _opt_re.match(normalize_contract_symbol(sym))
     if not m:
         return None
     return m.group("under"), m.group("cp"), float(m.group("strike"))
@@ -195,6 +199,7 @@ def run_pl603_iv_traded_v4(
     csv_path = _resolve_repo_path(csv_path)
     out_path = _resolve_repo_path(out_path)
     out_csv_preview_path = _resolve_repo_path(out_csv_preview_path) if out_csv_preview_path else None
+    normalized_underlying = normalize_contract_symbol(underlying)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_csv_preview_path is not None:
@@ -202,9 +207,10 @@ def run_pl603_iv_traded_v4(
 
     df = pd.read_csv(csv_path)
     df["symbol"] = df["symbol"].astype(str)
+    df["symbol_normalized"] = df["symbol"].map(normalize_contract_symbol)
 
     # 1) 只取包含 underlying 的行（期货 + 期权）
-    df = df[df["symbol"].str.contains(re.escape(underlying), na=False)].copy()
+    df = df[df["symbol_normalized"].str.contains(re.escape(normalized_underlying), na=False)].copy()
 
     # 2) 时间：兼容 Linux 常见 epoch（s/ms/us/ns），统一转上海时间
     ts = pd.to_numeric(df["timestamp"], errors="coerce")
@@ -239,7 +245,7 @@ def run_pl603_iv_traded_v4(
     df.loc[df["is_option"], "K"] = parsed[df["is_option"]].apply(lambda x: x[2])
 
     # 5) 期货行：symbol == underlying
-    df["is_future"] = df["symbol"].eq(underlying)
+    df["is_future"] = df["symbol_normalized"].eq(normalized_underlying)
 
     # 期货 F：盘口有效时优先用“微观价格 microprice（按买一卖一量加权）”；
     # 但如果盘口价差 >= 2 个 tick，则仍用简单中价 mid（避免极端盘口/撮合噪声）

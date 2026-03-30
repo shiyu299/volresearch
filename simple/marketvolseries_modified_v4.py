@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import re
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from scipy.stats import norm
 
 
 SIMPLE_ROOT = Path(__file__).resolve().parent
+_OPT_RE = re.compile(r"^(?P<under>[A-Z]+\d+)(?P<cp>[CP])(?P<strike>\d+(?:\.\d+)?)$")
 
 
 def _resolve_local_path(path_like) -> Path:
@@ -16,11 +18,15 @@ def _resolve_local_path(path_like) -> Path:
     return path if path.is_absolute() else (SIMPLE_ROOT / path)
 
 
+def normalize_contract_symbol(symbol: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(symbol).upper())
+
+
 def parse_option_symbol(symbol: str):
-    m = re.match(r"^([A-Za-z]+\d+)([CP])(\d+(?:\.\d+)?)$", str(symbol).upper())
+    m = _OPT_RE.match(normalize_contract_symbol(symbol))
     if not m:
         return None
-    return m.group(1), m.group(2), float(m.group(3))
+    return m.group("under"), m.group("cp"), float(m.group("strike"))
 
 
 def black76_price(f, k, t, r, sigma, cp):
@@ -109,6 +115,7 @@ def run_pl603_iv_traded_v4(
     csv_path = _resolve_local_path(csv_path)
     out_path = _resolve_local_path(out_path)
     out_csv_preview_path = _resolve_local_path(out_csv_preview_path) if out_csv_preview_path else None
+    normalized_underlying = normalize_contract_symbol(underlying)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if out_csv_preview_path is not None:
@@ -116,7 +123,8 @@ def run_pl603_iv_traded_v4(
 
     df = pd.read_csv(csv_path)
     df["symbol"] = df["symbol"].astype(str)
-    df = df[df["symbol"].str.contains(re.escape(underlying), na=False)].copy()
+    df["symbol_normalized"] = df["symbol"].map(normalize_contract_symbol)
+    df = df[df["symbol_normalized"].str.contains(re.escape(normalized_underlying), na=False)].copy()
 
     ts = pd.to_numeric(df["timestamp"], errors="coerce")
     abs_med = float(np.nanmedian(np.abs(ts.values))) if np.isfinite(ts).any() else np.nan
@@ -143,7 +151,7 @@ def run_pl603_iv_traded_v4(
     df.loc[df["is_option"], "underlying"] = parsed[df["is_option"]].apply(lambda x: x[0])
     df.loc[df["is_option"], "cp"] = parsed[df["is_option"]].apply(lambda x: x[1])
     df.loc[df["is_option"], "K"] = parsed[df["is_option"]].apply(lambda x: x[2])
-    df["is_future"] = df["symbol"].eq(underlying)
+    df["is_future"] = df["symbol_normalized"].eq(normalized_underlying)
 
     fut_df = df[df["is_future"]].copy()
     tick = estimate_tick_size(fut_df)
@@ -283,3 +291,32 @@ def run_pl603_iv_traded_v4(
     if out_csv_preview_path:
         out.head(int(csv_preview_n)).to_csv(out_csv_preview_path, index=False, encoding="utf-8-sig")
     return out
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run modified-v4 option/futures IV calculation.")
+    parser.add_argument("--csv-path", default="data/raw/pl.csv")
+    parser.add_argument("--underlying", default="PL603")
+    parser.add_argument("--expiry-date", default="2026-02-11")
+    parser.add_argument("--spread-limit", type=float, default=15.0)
+    parser.add_argument("--r", type=float, default=0.0)
+    parser.add_argument("--day-count", type=float, default=365.0)
+    parser.add_argument("--tz-exchange", default="Asia/Shanghai")
+    parser.add_argument("--out-path", default="data/derived/PL603_option_iv_vega_traded_v4.parquet")
+    parser.add_argument("--out-csv-preview-path", default=None)
+    parser.add_argument("--csv-preview-n", type=int, default=3000)
+    args = parser.parse_args()
+
+    out = run_pl603_iv_traded_v4(
+        csv_path=args.csv_path,
+        underlying=args.underlying,
+        expiry_date=args.expiry_date,
+        spread_limit=args.spread_limit,
+        r=args.r,
+        day_count=args.day_count,
+        tz_exchange=args.tz_exchange,
+        out_path=args.out_path,
+        out_csv_preview_path=args.out_csv_preview_path,
+        csv_preview_n=args.csv_preview_n,
+    )
+    print("done ->" + str(_resolve_local_path(args.out_path)) + f" ({len(out)} rows)")
