@@ -4,6 +4,7 @@ import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -17,6 +18,39 @@ FEATURE_COLS = [
     "resid_z_5mctx",
     "flow_5m_ema",
     "shockF",
+]
+
+
+TIME_SERIES_COLS = [
+    "dt_exch",
+    "trade_date",
+    "product",
+    "source_file",
+    "iv_pool",
+    "flow",
+    "F_used",
+    "pool_n",
+    "used_n",
+    "grace_n",
+    "mins_from_open",
+    "mins_to_close",
+    "train_allowed",
+    "predict_allowed",
+    "iv_dev_ema5m_ratio",
+    "iv_mom_5m",
+    "iv_willr_5m",
+    "flow_5m_sum",
+    "flow_5m_ema",
+    "resid_z_5mctx",
+    "shockF",
+    "future_iv_mean_3_5m",
+    "y_3_5m_mean",
+    "p",
+    "conf",
+    "triggered",
+    "pred_sign",
+    "true_sign",
+    "n_train_seen",
 ]
 
 
@@ -48,8 +82,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--input-dir", default="data/derived/TA")
     p.add_argument("--glob", default="*.parquet")
     p.add_argument("--atm-n", type=int, default=15)
+    p.add_argument(
+        "--trading-session",
+        action="append",
+        dest="trading_sessions",
+        help="Trading session in HH:MM:SS-HH:MM:SS format; repeat this flag to add more sessions.",
+    )
     p.add_argument("--pool-refresh-seconds", type=int, default=120)
     p.add_argument("--pool-refresh-fut-move", type=float, default=0.0)
+    p.add_argument("--min-train-minutes-after-open", type=float, default=1.0)
+    p.add_argument("--min-predict-minutes-after-open", type=float, default=1.0)
+    p.add_argument("--min-predict-minutes-before-close", type=float, default=5.0)
     p.add_argument("--conf-thr", type=float, default=0.20)
     p.add_argument("--min-train", type=int, default=3600)
     p.add_argument("--fit-steps", type=int, default=120)
@@ -57,7 +100,65 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lr", type=float, default=0.03)
     p.add_argument("--l2", type=float, default=1e-3)
     p.add_argument("--out-dir", default="iv_vega_hf/v1.5/output/ta")
-    return p.parse_args()
+    args = p.parse_args()
+    if not args.trading_sessions:
+        args.trading_sessions = [
+            "21:00:00-23:00:00",
+            "09:00:00-10:15:00",
+            "10:30:00-11:30:00",
+            "13:30:00-15:00:00",
+        ]
+    return args
+
+
+class SessionSpec(NamedTuple):
+    start_seconds: int
+    end_seconds: int
+    raw: str
+
+
+def _hhmmss_to_seconds(text: str) -> int:
+    parts = text.strip().split(":")
+    if len(parts) != 3:
+        raise ValueError(f"invalid time '{text}', expected HH:MM:SS")
+    hh, mm, ss = (int(x) for x in parts)
+    if not (0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 59):
+        raise ValueError(f"invalid time '{text}', out of range")
+    return hh * 3600 + mm * 60 + ss
+
+
+def parse_trading_sessions(values: list[str]) -> list[SessionSpec]:
+    sessions: list[SessionSpec] = []
+    for value in values:
+        if "-" not in value:
+            raise ValueError(f"invalid session '{value}', expected HH:MM:SS-HH:MM:SS")
+        start_text, end_text = value.split("-", 1)
+        sessions.append(
+            SessionSpec(
+                start_seconds=_hhmmss_to_seconds(start_text),
+                end_seconds=_hhmmss_to_seconds(end_text),
+                raw=value,
+            )
+        )
+    return sessions
+
+
+def _resolve_session_window(ts: pd.Timestamp, sessions: list[SessionSpec]) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+    ts = pd.Timestamp(ts)
+    day = ts.normalize()
+    tod = ts.hour * 3600 + ts.minute * 60 + ts.second
+    for spec in sessions:
+        start = spec.start_seconds
+        end = spec.end_seconds
+        if start <= end:
+            if start <= tod <= end:
+                return day + pd.Timedelta(seconds=start), day + pd.Timedelta(seconds=end)
+            continue
+        if tod >= start:
+            return day + pd.Timedelta(seconds=start), day + pd.Timedelta(days=1, seconds=end)
+        if tod <= end:
+            return day - pd.Timedelta(days=1) + pd.Timedelta(seconds=start), day + pd.Timedelta(seconds=end)
+    return None
 
 
 def infer_trade_date(ts: pd.Timestamp) -> pd.Timestamp:
@@ -67,19 +168,28 @@ def infer_trade_date(ts: pd.Timestamp) -> pd.Timestamp:
     return ts.normalize()
 
 
-def minutes_from_session_open(ts: pd.Timestamp) -> float:
-    ts = pd.Timestamp(ts)
-    hm = ts.hour * 60 + ts.minute + ts.second / 60.0
-    if 21 * 60 <= hm <= 23 * 60:
-        start = ts.normalize() + pd.Timedelta(hours=21)
-        return (ts - start).total_seconds() / 60.0
-    if 9 * 60 <= hm <= 11 * 60 + 30:
-        start = ts.normalize() + pd.Timedelta(hours=9)
-        return (ts - start).total_seconds() / 60.0
-    if 13 * 60 + 30 <= hm <= 15 * 60:
-        start = ts.normalize() + pd.Timedelta(hours=13, minutes=30)
-        return (ts - start).total_seconds() / 60.0
-    return np.nan
+def minutes_from_session_open(ts: pd.Timestamp, sessions: list[SessionSpec]) -> float:
+    window = _resolve_session_window(ts, sessions)
+    if window is None:
+        return np.nan
+    open_ts, _ = window
+    return (pd.Timestamp(ts) - open_ts).total_seconds() / 60.0
+
+
+def minutes_to_session_close(ts: pd.Timestamp, sessions: list[SessionSpec]) -> float:
+    window = _resolve_session_window(ts, sessions)
+    if window is None:
+        return np.nan
+    _, close_ts = window
+    return (close_ts - pd.Timestamp(ts)).total_seconds() / 60.0
+
+
+def _build_future_mean_label(iv: pd.Series, session_id: pd.Series) -> pd.Series:
+    out = pd.Series(np.nan, index=iv.index, dtype=float)
+    for _, grp in iv.groupby(session_id):
+        future_mean = grp.shift(-180).rolling(121, min_periods=80).mean().shift(-120)
+        out.loc[grp.index] = future_mean
+    return out
 
 
 def _pick_pool_symbols(meta: pd.DataFrame, f_now: float, n: int) -> list[str]:
@@ -125,11 +235,23 @@ def _grace_weight(elapsed_seconds: float) -> float:
 def build_second_panel(
     raw: pd.DataFrame,
     atm_n: int,
+    product: str,
     source_name: str,
     pool_refresh_seconds: int,
     pool_refresh_fut_move: float,
+    sessions: list[SessionSpec],
+    min_train_minutes_after_open: float,
+    min_predict_minutes_after_open: float,
+    min_predict_minutes_before_close: float,
 ) -> pd.DataFrame:
     raw = raw.sort_values("dt_exch").copy()
+    raw["session_window"] = raw["dt_exch"].map(lambda ts: _resolve_session_window(ts, sessions))
+    raw = raw[raw["session_window"].notna()].copy()
+    if raw.empty:
+        return pd.DataFrame()
+    raw["session_open"] = raw["session_window"].map(lambda x: x[0])
+    raw["session_close"] = raw["session_window"].map(lambda x: x[1])
+    raw["session_id"] = raw["session_open"].astype(str) + "->" + raw["session_close"].astype(str)
 
     fut = raw[raw["is_future"] == True].copy()
     fut["sec"] = fut["dt_exch"].dt.floor("1s")
@@ -164,6 +286,14 @@ def build_second_panel(
         .groupby("sec")["F_used"]
         .last()
         .sort_index()
+        .reindex(sec_index)
+        .ffill()
+    )
+    sec_meta = (
+        raw[["sec", "session_open", "session_close", "session_id"]]
+        .drop_duplicates(subset=["sec"])
+        .sort_values("sec")
+        .set_index("sec")
         .reindex(sec_index)
         .ffill()
     )
@@ -252,6 +382,9 @@ def build_second_panel(
                 "pool_n": int(len(pool_syms)),
                 "used_n": int(n_used),
                 "grace_n": int(n_grace),
+                "session_open": pd.Timestamp(sec_meta.loc[bt, "session_open"]),
+                "session_close": pd.Timestamp(sec_meta.loc[bt, "session_close"]),
+                "session_id": str(sec_meta.loc[bt, "session_id"]),
             }
         )
 
@@ -284,13 +417,22 @@ def build_second_panel(
     )
     sec["shockF"] = shockF
 
-    sec["future_iv_mean_3_5m"] = iv.shift(-180).rolling(121, min_periods=80).mean().shift(-120)
+    sec["future_iv_mean_3_5m"] = _build_future_mean_label(iv, sec["session_id"])
     sec["y_3_5m_mean"] = sec["future_iv_mean_3_5m"] - iv
+    sec["product"] = product
     sec["source_file"] = source_name
     sec["trade_date"] = sec["dt_exch"].map(infer_trade_date)
-    sec["mins_from_open"] = sec["dt_exch"].map(minutes_from_session_open)
-    sec["train_allowed"] = sec["mins_from_open"].ge(3.0)
-    sec["predict_allowed"] = sec["mins_from_open"].ge(5.0)
+    sec["mins_from_open"] = sec["dt_exch"].map(lambda ts: minutes_from_session_open(ts, sessions))
+    sec["mins_to_close"] = sec["dt_exch"].map(lambda ts: minutes_to_session_close(ts, sessions))
+    sec["train_allowed"] = (
+        sec["mins_from_open"].ge(float(min_train_minutes_after_open))
+        & sec["future_iv_mean_3_5m"].notna()
+    )
+    sec["predict_allowed"] = (
+        sec["mins_from_open"].ge(float(min_predict_minutes_after_open))
+        & sec["mins_to_close"].gt(float(min_predict_minutes_before_close))
+        & sec["future_iv_mean_3_5m"].notna()
+    )
     sec["label_ready_ts"] = sec["dt_exch"] + pd.Timedelta(minutes=5)
     return sec
 
@@ -432,7 +574,55 @@ def summarize_predictions(df: pd.DataFrame) -> dict:
     }
 
 
-def run_online_backtest(panels: list[pd.DataFrame], args: argparse.Namespace, out_dir: Path) -> tuple[pd.DataFrame, dict]:
+def _json_ready(value):
+    if isinstance(value, (np.floating, float)):
+        return None if not np.isfinite(value) else float(value)
+    if isinstance(value, (np.integer, int)):
+        return int(value)
+    if isinstance(value, (pd.Timestamp,)):
+        return str(value)
+    return value
+
+
+def export_prediction_artifacts(base_dir: Path, time_series_df: pd.DataFrame) -> None:
+    if time_series_df.empty:
+        return
+
+    export_root = base_dir / "data" / "prediction" / "logistic"
+    export_root.mkdir(parents=True, exist_ok=True)
+
+    for (product, trade_date), grp in time_series_df.groupby(["product", "trade_date"], dropna=False):
+        if pd.isna(product) or pd.isna(trade_date):
+            continue
+        trade_date_ts = pd.Timestamp(trade_date)
+        day_dir = export_root / str(product) / str(trade_date_ts.date())
+        day_dir.mkdir(parents=True, exist_ok=True)
+
+        ts_out = grp.sort_values("dt_exch").copy()
+        keep_cols = [c for c in TIME_SERIES_COLS if c in ts_out.columns]
+        ts_out = ts_out[keep_cols]
+        ts_out.to_parquet(day_dir / "timeseries.parquet", index=False)
+        ts_out.to_csv(day_dir / "timeseries.csv", index=False)
+
+        pred_slice = ts_out[ts_out["p"].notna()].copy() if "p" in ts_out.columns else pd.DataFrame()
+        eval_payload = {
+            "product": str(product),
+            "trade_date": str(trade_date_ts.date()),
+            "time_series_rows": int(len(ts_out)),
+            "prediction_rows": int(len(pred_slice)),
+            "metrics": {k: _json_ready(v) for k, v in summarize_predictions(pred_slice).items()},
+            "files": {
+                "timeseries_parquet": str(day_dir / "timeseries.parquet"),
+                "timeseries_csv": str(day_dir / "timeseries.csv"),
+            },
+        }
+        (day_dir / "evaluation.json").write_text(
+            json.dumps(eval_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+
+def run_online_backtest(panels: list[pd.DataFrame], args: argparse.Namespace, out_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     state = OnlineLogitState(
         feature_cols=FEATURE_COLS,
         lr=args.lr,
@@ -443,13 +633,21 @@ def run_online_backtest(panels: list[pd.DataFrame], args: argparse.Namespace, ou
     )
     pending: list[dict] = []
     predictions: list[dict] = []
+    time_series_panels: list[pd.DataFrame] = []
     daily_rows: list[dict] = []
     model_dir = out_dir / "models"
     latest_ts: pd.Timestamp | None = None
 
     for panel in panels:
+        panel = panel.copy()
+        panel["p"] = np.nan
+        panel["conf"] = np.nan
+        panel["triggered"] = False
+        panel["pred_sign"] = np.nan
+        panel["true_sign"] = np.where(panel["y_3_5m_mean"] > 0, 1, np.where(panel["y_3_5m_mean"].notna(), -1, np.nan))
+        panel["n_train_seen"] = np.nan
         file_name = str(panel["source_file"].iloc[0]) if not panel.empty else ""
-        for row in panel.itertuples(index=False):
+        for idx, row in panel.iterrows():
             ts = pd.Timestamp(row.dt_exch)
             latest_ts = ts
 
@@ -461,7 +659,7 @@ def run_online_backtest(panels: list[pd.DataFrame], args: argparse.Namespace, ou
                     still_pending.append(sample)
             pending = still_pending
 
-            x = np.asarray([getattr(row, c) for c in FEATURE_COLS], dtype=float)
+            x = np.asarray([row[c] for c in FEATURE_COLS], dtype=float)
             y_raw = float(row.y_3_5m_mean)
             if np.isfinite(y_raw) and bool(row.train_allowed) and np.all(np.isfinite(x)):
                 pending.append(
@@ -476,10 +674,16 @@ def run_online_backtest(panels: list[pd.DataFrame], args: argparse.Namespace, ou
                 p = state.predict_prob(x)
                 pred_sign = 1 if p >= 0.5 else -1
                 conf = abs(p - 0.5)
+                panel.at[idx, "p"] = p
+                panel.at[idx, "conf"] = conf
+                panel.at[idx, "triggered"] = conf >= args.conf_thr
+                panel.at[idx, "pred_sign"] = pred_sign
+                panel.at[idx, "n_train_seen"] = state.n_train
                 predictions.append(
                     {
                         "dt_exch": ts,
                         "trade_date": pd.Timestamp(row.trade_date),
+                        "product": row.product,
                         "source_file": file_name,
                         "p": p,
                         "conf": conf,
@@ -490,6 +694,7 @@ def run_online_backtest(panels: list[pd.DataFrame], args: argparse.Namespace, ou
                         "n_train_seen": state.n_train,
                     }
                 )
+        time_series_panels.append(panel)
 
         if not panel.empty:
             file_pred = pd.DataFrame([r for r in predictions if r["source_file"] == file_name])
@@ -502,8 +707,9 @@ def run_online_backtest(panels: list[pd.DataFrame], args: argparse.Namespace, ou
                     state.save(model_dir / f"TA_model_{pd.Timestamp(trade_date).date()}.npz", pd.Timestamp(trade_date))
 
     pred_df = pd.DataFrame(predictions)
+    time_series_df = pd.concat(time_series_panels, ignore_index=True) if time_series_panels else pd.DataFrame()
     state.save(model_dir / "TA_model_latest.npz", latest_ts)
-    return pred_df, {
+    return pred_df, time_series_df, {
         "overall": summarize_predictions(pred_df),
         "daily": daily_rows,
     }
@@ -515,6 +721,10 @@ def load_panels(
     atm_n: int,
     pool_refresh_seconds: int,
     pool_refresh_fut_move: float,
+    sessions: list[SessionSpec],
+    min_train_minutes_after_open: float,
+    min_predict_minutes_after_open: float,
+    min_predict_minutes_before_close: float,
 ) -> list[pd.DataFrame]:
     files = sorted(input_dir.rglob(pattern))
     panels: list[pd.DataFrame] = []
@@ -525,9 +735,14 @@ def load_panels(
             build_second_panel(
                 raw,
                 atm_n=atm_n,
+                product=fp.parent.name,
                 source_name=fp.name,
                 pool_refresh_seconds=pool_refresh_seconds,
                 pool_refresh_fut_move=pool_refresh_fut_move,
+                sessions=sessions,
+                min_train_minutes_after_open=min_train_minutes_after_open,
+                min_predict_minutes_after_open=min_predict_minutes_after_open,
+                min_predict_minutes_before_close=min_predict_minutes_before_close,
             )
         )
     return panels
@@ -535,6 +750,8 @@ def load_panels(
 
 def main() -> None:
     args = parse_args()
+    sessions = parse_trading_sessions(args.trading_sessions)
+    repo_root = Path(__file__).resolve().parents[4]
     input_dir = Path(args.input_dir)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -545,23 +762,34 @@ def main() -> None:
         args.atm_n,
         args.pool_refresh_seconds,
         args.pool_refresh_fut_move,
+        sessions,
+        args.min_train_minutes_after_open,
+        args.min_predict_minutes_after_open,
+        args.min_predict_minutes_before_close,
     )
-    pred_df, summary = run_online_backtest(panels, args, out_dir)
+    pred_df, time_series_df, summary = run_online_backtest(panels, args, out_dir)
 
     pred_path = out_dir / "ta_v15_predictions.parquet"
     daily_path = out_dir / "ta_v15_daily_summary.parquet"
+    ts_path = out_dir / "ta_v15_timeseries.parquet"
     summary_path = out_dir / "ta_v15_summary.json"
 
     pred_df.to_parquet(pred_path, index=False)
     pd.DataFrame(summary["daily"]).to_parquet(daily_path, index=False)
+    time_series_df.to_parquet(ts_path, index=False)
+    export_prediction_artifacts(repo_root, time_series_df)
 
     out = {
         "config": {
             "input_dir": str(input_dir),
             "glob": args.glob,
             "atm_n": args.atm_n,
+            "trading_sessions": args.trading_sessions,
             "pool_refresh_seconds": args.pool_refresh_seconds,
             "pool_refresh_fut_move": args.pool_refresh_fut_move,
+            "min_train_minutes_after_open": args.min_train_minutes_after_open,
+            "min_predict_minutes_after_open": args.min_predict_minutes_after_open,
+            "min_predict_minutes_before_close": args.min_predict_minutes_before_close,
             "conf_thr": args.conf_thr,
             "min_train": args.min_train,
             "fit_steps": args.fit_steps,
@@ -569,8 +797,8 @@ def main() -> None:
             "lr": args.lr,
             "l2": args.l2,
             "label": "mean(IV[t+3m:t+5m]) - IV[t]",
-            "train_gate": "exclude first 3 minutes after each 21:00 / 09:00 / 13:30 open",
-            "predict_gate": "predict only from 5 minutes after each 21:00 / 09:00 / 13:30 open",
+            "train_gate": "training rows must be inside configured trading sessions, at least min_train_minutes_after_open after session open, and have an in-session 3m-5m future label",
+            "predict_gate": "prediction rows must be inside configured trading sessions, at least min_predict_minutes_after_open after session open, more than min_predict_minutes_before_close before session close, and have an in-session 3m-5m future label",
             "warmup_policy": "first run requires min_train labeled samples; later days continue with persisted in-memory model",
             "filter": "remove one-sided future seconds",
             "pool_rule": "ATM strike forced in, non-ATM OTM only, refresh by seconds or |ΔF|, 5min exit grace decay",
@@ -580,6 +808,8 @@ def main() -> None:
         "artifacts": {
             "predictions": str(pred_path),
             "daily_summary": str(daily_path),
+            "time_series": str(ts_path),
+            "prediction_export_root": str(repo_root / "data" / "prediction" / "logistic"),
             "models_dir": str(out_dir / "models"),
         },
     }
