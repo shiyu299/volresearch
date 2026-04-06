@@ -45,7 +45,7 @@
       "all_hit": 0.5808798760358418,
       "triggered_hit": 0.580226904376013,
       "coverage": 0.7897999056794448,
-      "avg_vol_decimal": 0.006285915144839193,
+      "avg_vol_decimal": 0.006285915144839194,
       "avg_vol_points": 0.6285915144839194
     },
     {
@@ -56,8 +56,8 @@
       "all_hit": 0.6107895714968407,
       "triggered_hit": 0.6321419253848161,
       "coverage": 0.8141029044761854,
-      "avg_vol_decimal": 0.005590597542299228,
-      "avg_vol_points": 0.5590597542299228
+      "avg_vol_decimal": 0.005590597542299229,
+      "avg_vol_points": 0.5590597542299229
     },
     {
       "source_file": "TA605312.parquet",
@@ -89,8 +89,8 @@
       "all_hit": 0.50178734724416,
       "triggered_hit": 0.5061987812565665,
       "coverage": 0.7912544683681104,
-      "avg_vol_decimal": 0.0006289041428477106,
-      "avg_vol_points": 0.06289041428477106
+      "avg_vol_decimal": 0.0006289041428477111,
+      "avg_vol_points": 0.06289041428477112
     },
     {
       "source_file": "TA605317.parquet",
@@ -100,7 +100,7 @@
       "all_hit": 0.5682739492212503,
       "triggered_hit": 0.5849187612831551,
       "coverage": 0.7681886067847237,
-      "avg_vol_decimal": 0.0027940311621131673,
+      "avg_vol_decimal": 0.0027940311621131677,
       "avg_vol_points": 0.27940311621131675
     },
     {
@@ -155,8 +155,8 @@
       "all_hit": 0.47007440957618896,
       "triggered_hit": 0.46495726495726497,
       "coverage": 0.7570365577483015,
-      "avg_vol_decimal": 9.70837774799263e-05,
-      "avg_vol_points": 0.00970837774799263
+      "avg_vol_decimal": 9.708377747992611e-05,
+      "avg_vol_points": 0.009708377747992611
     },
     {
       "source_file": "TA605324.parquet",
@@ -166,7 +166,7 @@
       "all_hit": 0.5688810816565527,
       "triggered_hit": 0.5887129244396725,
       "coverage": 0.7932502927712126,
-      "avg_vol_decimal": 0.002615842759872308,
+      "avg_vol_decimal": 0.0026158427598723085,
       "avg_vol_points": 0.26158427598723083
     },
     {
@@ -177,8 +177,8 @@
       "all_hit": 0.6217140414618508,
       "triggered_hit": 0.6456548747793108,
       "coverage": 0.8171083564864288,
-      "avg_vol_decimal": 0.003447659759128028,
-      "avg_vol_points": 0.3447659759128028
+      "avg_vol_decimal": 0.0034476597591280274,
+      "avg_vol_points": 0.3447659759128027
     }
   ],
   "artifacts": {

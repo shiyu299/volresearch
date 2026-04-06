@@ -101,6 +101,32 @@ def load_evaluation(root: str, product: str, trade_date: str) -> dict:
     return json.loads(fp.read_text(encoding="utf-8"))
 
 
+@st.cache_data(show_spinner=False)
+def load_detail_frame(root: str, product: str, trade_date: str) -> pd.DataFrame:
+    day_dir = Path(root) / product / trade_date
+    for name in ["details.parquet"]:
+        fp = day_dir / name
+        if fp.exists():
+            try:
+                df = pd.read_parquet(fp)
+                if "dt_exch" in df.columns:
+                    df["dt_exch"] = pd.to_datetime(df["dt_exch"])
+                return df.sort_values(["dt_exch", "symbol"]).reset_index(drop=True)
+            except Exception:
+                pass
+    for name in ["details.csv"]:
+        fp = day_dir / name
+        if fp.exists():
+            df = pd.read_csv(fp)
+            if "dt_exch" in df.columns:
+                df["dt_exch"] = pd.to_datetime(df["dt_exch"])
+            for col in ["trade_date", "session_open", "session_close"]:
+                if col in df.columns:
+                    df[col] = pd.to_datetime(df[col], errors="coerce")
+            return df.sort_values(["dt_exch", "symbol"]).reset_index(drop=True)
+    return pd.DataFrame()
+
+
 def factor_candidates(df: pd.DataFrame) -> list[str]:
     numeric_cols = []
     for col in df.columns:
@@ -269,6 +295,7 @@ def main() -> None:
         compress_gaps = st.checkbox("Compress session gaps", value=True)
 
     eval_info = load_evaluation(str(EXPORT_ROOT), product, trade_date)
+    details_df = load_detail_frame(str(EXPORT_ROOT), product, trade_date)
     metrics = eval_info.get("metrics", {}) if isinstance(eval_info, dict) else {}
 
     c1, c2, c3, c4 = st.columns(4)
@@ -288,8 +315,128 @@ def main() -> None:
     st.plotly_chart(fig, use_container_width=True)
 
     with st.expander("Preview data"):
-        preview_cols = [c for c in ["dt_exch", "iv_pool", factor_col, "cum_flow_trade_date", "p", "conf", "pred_sign", "true_sign"] if c in df.columns]
-        st.dataframe(df[preview_cols].tail(200), use_container_width=True, height=320)
+        tmin = pd.Timestamp(df["dt_exch"].min())
+        tmax = pd.Timestamp(df["dt_exch"].max())
+        default_end = tmax.to_pydatetime()
+        default_start = max(tmin, tmax - pd.Timedelta(minutes=10)).to_pydatetime()
+        win_start, win_end = st.slider(
+            "Time window",
+            min_value=tmin.to_pydatetime(),
+            max_value=tmax.to_pydatetime(),
+            value=(default_start, default_end),
+            format="MM/DD HH:mm:ss",
+        )
+        mask = df["dt_exch"].between(pd.Timestamp(win_start), pd.Timestamp(win_end))
+        df_window = df.loc[mask].copy()
+        if df_window.empty:
+            st.warning("当前时间窗口没有数据。")
+            return
+        focus_options = [pd.Timestamp(ts).to_pydatetime() for ts in df_window["dt_exch"].drop_duplicates().tolist()]
+        focus_ts = st.select_slider(
+            "Focus timestamp",
+            options=focus_options,
+            value=focus_options[-1],
+            format_func=lambda x: pd.Timestamp(x).strftime("%m-%d %H:%M:%S"),
+        )
+        focus_ts = pd.Timestamp(focus_ts)
+        preview_cols = [
+            c
+            for c in [
+                "dt_exch",
+                "iv_pool",
+                factor_col,
+                "flow",
+                "cum_flow_trade_date",
+                "cum_flow_session",
+                "p",
+                "conf",
+                "pred_sign",
+                "true_sign",
+                "pool_n",
+                "used_n",
+                "grace_n",
+            ]
+            if c in df_window.columns
+        ]
+        left, right = st.columns([1.2, 1.3])
+        with left:
+            st.markdown("**Main time series**")
+            st.caption(
+                f"{len(df_window):,} rows in window, focus at {focus_ts.strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            st.dataframe(df_window[preview_cols], use_container_width=True, height=320)
+        with right:
+            focus_row = df_window[df_window["dt_exch"] == focus_ts].copy()
+            if not focus_row.empty:
+                st.markdown("**Focused second**")
+                st.dataframe(focus_row[preview_cols], use_container_width=True, height=120)
+            else:
+                st.caption("Focused second is not available in the filtered time series.")
+
+        if not details_df.empty:
+            dmask = details_df["dt_exch"].between(pd.Timestamp(win_start), pd.Timestamp(win_end))
+            details_window = details_df.loc[dmask].copy()
+            snapshot = details_window[details_window["dt_exch"] == focus_ts].copy()
+            detail_cols = [
+                c
+                for c in [
+                    "dt_exch",
+                    "symbol",
+                    "cp",
+                    "K",
+                    "in_pool",
+                    "in_grace",
+                    "decay_mult",
+                    "iv_contract",
+                    "vega_contract",
+                    "vega_weight_used",
+                    "traded_vega_signed",
+                    "spread",
+                    "iv_pool",
+                    "F_used",
+                ]
+                if c in details_window.columns
+            ]
+            snapshot_cols = [
+                c
+                for c in [
+                    "dt_exch",
+                    "symbol",
+                    "cp",
+                    "K",
+                    "in_pool",
+                    "in_grace",
+                    "decay_mult",
+                    "iv_contract",
+                    "vega_contract",
+                    "vega_weight_used",
+                    "traded_vega_signed",
+                    "spread",
+                    "iv_pool",
+                    "F_used",
+                ]
+                if c in snapshot.columns
+            ]
+            if not snapshot.empty:
+                snapshot = snapshot.sort_values(
+                    by=["in_pool", "in_grace", "K", "symbol"],
+                    ascending=[False, False, True, True],
+                )
+                st.markdown("**IV composition at focused second**")
+                st.caption(
+                    f"{len(snapshot):,} contracts contributing at {focus_ts.strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                st.dataframe(snapshot[snapshot_cols], use_container_width=True, height=260)
+            else:
+                st.caption("Focused second has no composition detail rows.")
+
+            st.markdown("**Window composition details**")
+            st.caption(
+                "Use this table to inspect whether symbols enter or leave the ATM pool around IV spikes."
+            )
+            st.dataframe(details_window[detail_cols], use_container_width=True, height=360)
+        else:
+            st.caption("No details table found for this trade date.")
 
     with st.expander("Evaluation JSON"):
         st.json(eval_info if eval_info else {})

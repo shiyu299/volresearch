@@ -62,6 +62,30 @@ TIME_SERIES_COLS = [
 ]
 
 
+DETAIL_COLS = [
+    "dt_exch",
+    "trade_date",
+    "product",
+    "source_file",
+    "session_id",
+    "session_open",
+    "session_close",
+    "symbol",
+    "cp",
+    "K",
+    "in_pool",
+    "in_grace",
+    "decay_mult",
+    "iv_contract",
+    "vega_contract",
+    "vega_weight_used",
+    "traded_vega_signed",
+    "spread",
+    "iv_pool",
+    "F_used",
+]
+
+
 def sigmoid(z: np.ndarray | float) -> np.ndarray | float:
     z = np.clip(z, -30, 30)
     return 1.0 / (1.0 + np.exp(-z))
@@ -251,12 +275,12 @@ def build_second_panel(
     min_train_minutes_after_open: float,
     min_predict_minutes_after_open: float,
     min_predict_minutes_before_close: float,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     raw = raw.sort_values("dt_exch").copy()
     raw["session_window"] = raw["dt_exch"].map(lambda ts: _resolve_session_window(ts, sessions))
     raw = raw[raw["session_window"].notna()].copy()
     if raw.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
     raw["session_open"] = raw["session_window"].map(lambda x: x[0])
     raw["session_close"] = raw["session_window"].map(lambda x: x[1])
     raw["session_id"] = raw["session_open"].astype(str) + "->" + raw["session_close"].astype(str)
@@ -273,7 +297,7 @@ def build_second_panel(
     opt = raw[raw["is_option"] == True].copy()
     opt = opt.dropna(subset=["F_used", "K"]).copy()
     if opt.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
 
     meta_cols = ["symbol", "K"]
     if "cp" in opt.columns:
@@ -312,6 +336,7 @@ def build_second_panel(
     pool_syms: list[str] = []
     pool_exit_since: dict[str, pd.Timestamp] = {}
     rows: list[dict] = []
+    detail_rows: list[dict] = []
 
     for bt in sec_index:
         f_now = float(f_series.loc[bt]) if bt in f_series.index else np.nan
@@ -357,6 +382,7 @@ def build_second_panel(
         flow_sum = 0.0
         n_used = 0
         n_grace = 0
+        second_details: list[dict] = []
         for sym in active_syms:
             key = (bt, sym)
             if key not in last_quote.index:
@@ -368,19 +394,46 @@ def build_second_panel(
             if not np.isfinite(iv_val) or iv_val <= 0 or not np.isfinite(vega_val) or vega_val <= 0 or decay_mult <= 0.0:
                 continue
             used_iv.append(iv_val)
-            used_w.append(vega_val * decay_mult)
+            used_weight = vega_val * decay_mult
+            used_w.append(used_weight)
             flow_val = float(row.get("traded_vega_signed", 0.0))
             if np.isfinite(flow_val):
                 flow_sum += flow_val
             n_used += 1
             if decay_mult < 0.999:
                 n_grace += 1
+            second_details.append(
+                {
+                    "dt_exch": pd.Timestamp(bt),
+                    "trade_date": pd.Timestamp(infer_trade_date(bt)),
+                    "product": product,
+                    "source_file": source_name,
+                    "session_id": str(sec_meta.loc[bt, "session_id"]),
+                    "session_open": pd.Timestamp(sec_meta.loc[bt, "session_open"]),
+                    "session_close": pd.Timestamp(sec_meta.loc[bt, "session_close"]),
+                    "symbol": str(sym),
+                    "cp": row.get("cp"),
+                    "K": float(row.get("K", np.nan)) if pd.notna(row.get("K", np.nan)) else np.nan,
+                    "in_pool": bool(sym in pool_syms),
+                    "in_grace": bool(sym not in pool_syms),
+                    "decay_mult": float(decay_mult),
+                    "iv_contract": float(iv_val),
+                    "vega_contract": float(vega_val),
+                    "vega_weight_used": float(used_weight),
+                    "traded_vega_signed": float(flow_val) if np.isfinite(flow_val) else np.nan,
+                    "spread": float(row.get("spread", np.nan)) if pd.notna(row.get("spread", np.nan)) else np.nan,
+                    "F_used": float(f_now),
+                }
+            )
 
         if len(used_iv) == 0:
             continue
 
         w = np.asarray(used_w, dtype=float)
         iv = float(np.average(np.asarray(used_iv, dtype=float), weights=w)) if np.nansum(w) > 1e-12 else float(np.mean(used_iv))
+        for d in second_details:
+            d["iv_pool"] = float(iv)
+        detail_rows.extend(second_details)
         rows.append(
             {
                 "dt_exch": pd.Timestamp(bt),
@@ -398,7 +451,7 @@ def build_second_panel(
 
     sec = pd.DataFrame(rows).sort_values("dt_exch").dropna(subset=["iv_pool"]).copy()
     if sec.empty:
-        return sec
+        return sec, pd.DataFrame(detail_rows)
 
     iv = sec["iv_pool"]
     flow = sec["flow"].fillna(0.0)
@@ -442,7 +495,10 @@ def build_second_panel(
         & sec["future_iv_mean_3_5m"].notna()
     )
     sec["label_ready_ts"] = sec["dt_exch"] + pd.Timedelta(minutes=5)
-    return sec
+    details_df = pd.DataFrame(detail_rows)
+    if not details_df.empty:
+        details_df = details_df.sort_values(["dt_exch", "symbol"]).reset_index(drop=True)
+    return sec, details_df
 
 
 @dataclass
@@ -604,7 +660,7 @@ def augment_visualization_frame(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def export_prediction_artifacts(base_dir: Path, time_series_df: pd.DataFrame) -> None:
+def export_prediction_artifacts(base_dir: Path, time_series_df: pd.DataFrame, details_df: pd.DataFrame) -> None:
     if time_series_df.empty:
         return
 
@@ -624,6 +680,16 @@ def export_prediction_artifacts(base_dir: Path, time_series_df: pd.DataFrame) ->
         ts_out.to_parquet(day_dir / "timeseries.parquet", index=False)
         ts_out.to_parquet(day_dir / "visualization.parquet", index=False)
         ts_out.to_csv(day_dir / "timeseries.csv", index=False)
+        day_details = pd.DataFrame()
+        if not details_df.empty:
+            day_details = details_df[
+                (details_df["product"] == product)
+                & (details_df["trade_date"] == trade_date_ts)
+            ].sort_values(["dt_exch", "symbol"]).copy()
+            keep_detail_cols = [c for c in DETAIL_COLS if c in day_details.columns]
+            day_details = day_details[keep_detail_cols]
+            day_details.to_parquet(day_dir / "details.parquet", index=False)
+            day_details.to_csv(day_dir / "details.csv", index=False)
 
         pred_slice = ts_out[ts_out["p"].notna()].copy() if "p" in ts_out.columns else pd.DataFrame()
         eval_payload = {
@@ -631,11 +697,14 @@ def export_prediction_artifacts(base_dir: Path, time_series_df: pd.DataFrame) ->
             "trade_date": str(trade_date_ts.date()),
             "time_series_rows": int(len(ts_out)),
             "prediction_rows": int(len(pred_slice)),
+            "detail_rows": int(len(day_details)),
             "metrics": {k: _json_ready(v) for k, v in summarize_predictions(pred_slice).items()},
             "files": {
                 "timeseries_parquet": str(day_dir / "timeseries.parquet"),
                 "visualization_parquet": str(day_dir / "visualization.parquet"),
                 "timeseries_csv": str(day_dir / "timeseries.csv"),
+                "details_parquet": str(day_dir / "details.parquet"),
+                "details_csv": str(day_dir / "details.csv"),
             },
         }
         (day_dir / "evaluation.json").write_text(
@@ -644,7 +713,11 @@ def export_prediction_artifacts(base_dir: Path, time_series_df: pd.DataFrame) ->
         )
 
 
-def run_online_backtest(panels: list[pd.DataFrame], args: argparse.Namespace, out_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+def run_online_backtest(
+    panels: list[tuple[pd.DataFrame, pd.DataFrame]],
+    args: argparse.Namespace,
+    out_dir: Path,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, dict]:
     state = OnlineLogitState(
         feature_cols=FEATURE_COLS,
         lr=args.lr,
@@ -656,12 +729,14 @@ def run_online_backtest(panels: list[pd.DataFrame], args: argparse.Namespace, ou
     pending: list[dict] = []
     predictions: list[dict] = []
     time_series_panels: list[pd.DataFrame] = []
+    detail_panels: list[pd.DataFrame] = []
     daily_rows: list[dict] = []
     model_dir = out_dir / "models"
     latest_ts: pd.Timestamp | None = None
 
-    for panel in panels:
+    for panel, panel_details in panels:
         panel = panel.copy()
+        panel_details = panel_details.copy()
         panel["p"] = np.nan
         panel["conf"] = np.nan
         panel["triggered"] = False
@@ -718,6 +793,8 @@ def run_online_backtest(panels: list[pd.DataFrame], args: argparse.Namespace, ou
                     }
                 )
         time_series_panels.append(panel)
+        if not panel_details.empty:
+            detail_panels.append(panel_details)
 
         if not panel.empty:
             file_pred = pd.DataFrame([r for r in predictions if r["source_file"] == file_name])
@@ -732,8 +809,9 @@ def run_online_backtest(panels: list[pd.DataFrame], args: argparse.Namespace, ou
     pred_df = pd.DataFrame(predictions)
     time_series_df = pd.concat(time_series_panels, ignore_index=True) if time_series_panels else pd.DataFrame()
     time_series_df = augment_visualization_frame(time_series_df)
+    details_df = pd.concat(detail_panels, ignore_index=True) if detail_panels else pd.DataFrame()
     state.save(model_dir / "TA_model_latest.npz", latest_ts)
-    return pred_df, time_series_df, {
+    return pred_df, time_series_df, details_df, {
         "overall": summarize_predictions(pred_df),
         "daily": daily_rows,
     }
@@ -749,9 +827,9 @@ def load_panels(
     min_train_minutes_after_open: float,
     min_predict_minutes_after_open: float,
     min_predict_minutes_before_close: float,
-) -> list[pd.DataFrame]:
+) -> list[tuple[pd.DataFrame, pd.DataFrame]]:
     files = sorted(input_dir.rglob(pattern))
-    panels: list[pd.DataFrame] = []
+    panels: list[tuple[pd.DataFrame, pd.DataFrame]] = []
     for fp in files:
         raw = pd.read_parquet(fp)
         raw["dt_exch"] = pd.to_datetime(raw["dt_exch"])
@@ -791,7 +869,7 @@ def main() -> None:
         args.min_predict_minutes_after_open,
         args.min_predict_minutes_before_close,
     )
-    pred_df, time_series_df, summary = run_online_backtest(panels, args, out_dir)
+    pred_df, time_series_df, details_df, summary = run_online_backtest(panels, args, out_dir)
 
     pred_path = out_dir / "ta_v15_predictions.parquet"
     daily_path = out_dir / "ta_v15_daily_summary.parquet"
@@ -801,7 +879,7 @@ def main() -> None:
     pred_df.to_parquet(pred_path, index=False)
     pd.DataFrame(summary["daily"]).to_parquet(daily_path, index=False)
     time_series_df.to_parquet(ts_path, index=False)
-    export_prediction_artifacts(repo_root, time_series_df)
+    export_prediction_artifacts(repo_root, time_series_df, details_df)
 
     out = {
         "config": {

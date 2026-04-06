@@ -1,0 +1,59 @@
+{
+  "config": {
+    "input_dir": "/Users/shiyu/.openclaw/workspace/volresearch/data/derived/TA",
+    "glob": "TA605325.parquet",
+    "atm_n": 15,
+    "trading_sessions": [
+      "21:00:00-23:00:00",
+      "09:00:00-10:15:00",
+      "10:30:00-11:30:00",
+      "13:30:00-15:00:00"
+    ],
+    "pool_refresh_seconds": 120,
+    "pool_refresh_fut_move": 0.0,
+    "min_train_minutes_after_open": 1.0,
+    "min_predict_minutes_after_open": 1.0,
+    "min_predict_minutes_before_close": 5.0,
+    "conf_thr": 0.2,
+    "min_train": 3600,
+    "fit_steps": 120,
+    "online_steps": 1,
+    "lr": 0.03,
+    "l2": 0.001,
+    "label": "mean(IV[t+3m:t+5m]) - IV[t]",
+    "train_gate": "training rows must be inside configured trading sessions, at least min_train_minutes_after_open after session open, and have an in-session 3m-5m future label",
+    "predict_gate": "prediction rows must be inside configured trading sessions, at least min_predict_minutes_after_open after session open, more than min_predict_minutes_before_close before session close, and have an in-session 3m-5m future label",
+    "warmup_policy": "first run requires min_train labeled samples; later days continue with persisted in-memory model",
+    "filter": "remove one-sided future seconds",
+    "pool_rule": "ATM strike forced in, non-ATM OTM only, refresh by seconds or |ΔF|, 5min exit grace decay"
+  },
+  "metrics": {
+    "n": 14817,
+    "n_sig": 12155,
+    "all_hit": 0.6093676182763043,
+    "triggered_hit": 0.6248457424928013,
+    "coverage": 0.8203414996288048,
+    "avg_vol_decimal": 0.003318801314007802,
+    "avg_vol_points": 0.3318801314007802
+  },
+  "daily_metrics": [
+    {
+      "source_file": "TA605325.parquet",
+      "trade_date": "2026-03-25",
+      "n": 14817,
+      "n_sig": 12155,
+      "all_hit": 0.6093676182763043,
+      "triggered_hit": 0.6248457424928013,
+      "coverage": 0.8203414996288048,
+      "avg_vol_decimal": 0.003318801314007802,
+      "avg_vol_points": 0.3318801314007802
+    }
+  ],
+  "artifacts": {
+    "predictions": "/Users/shiyu/.openclaw/workspace/volresearch/iv_vega_hf/v1.5/output/ta_detail_smoke/ta_v15_predictions.parquet",
+    "daily_summary": "/Users/shiyu/.openclaw/workspace/volresearch/iv_vega_hf/v1.5/output/ta_detail_smoke/ta_v15_daily_summary.parquet",
+    "time_series": "/Users/shiyu/.openclaw/workspace/volresearch/iv_vega_hf/v1.5/output/ta_detail_smoke/ta_v15_timeseries.parquet",
+    "prediction_export_root": "/Users/shiyu/.openclaw/workspace/volresearch/data/prediction/logistic",
+    "models_dir": "/Users/shiyu/.openclaw/workspace/volresearch/iv_vega_hf/v1.5/output/ta_detail_smoke/models"
+  }
+}
