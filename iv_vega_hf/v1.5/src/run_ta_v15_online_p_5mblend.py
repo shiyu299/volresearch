@@ -26,8 +26,15 @@ TIME_SERIES_COLS = [
     "trade_date",
     "product",
     "source_file",
+    "session_id",
+    "session_open",
+    "session_close",
     "iv_pool",
     "flow",
+    "cum_flow_trade_date",
+    "cum_abs_flow_trade_date",
+    "cum_flow_session",
+    "cum_abs_flow_session",
     "F_used",
     "pool_n",
     "used_n",
@@ -45,6 +52,7 @@ TIME_SERIES_COLS = [
     "shockF",
     "future_iv_mean_3_5m",
     "y_3_5m_mean",
+    "y",
     "p",
     "conf",
     "triggered",
@@ -584,6 +592,18 @@ def _json_ready(value):
     return value
 
 
+def augment_visualization_frame(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    out = df.sort_values("dt_exch").copy()
+    flow = pd.to_numeric(out.get("flow"), errors="coerce").fillna(0.0)
+    out["cum_flow_trade_date"] = flow.groupby(out["trade_date"]).cumsum()
+    out["cum_abs_flow_trade_date"] = flow.abs().groupby(out["trade_date"]).cumsum()
+    out["cum_flow_session"] = flow.groupby(out["session_id"]).cumsum()
+    out["cum_abs_flow_session"] = flow.abs().groupby(out["session_id"]).cumsum()
+    return out
+
+
 def export_prediction_artifacts(base_dir: Path, time_series_df: pd.DataFrame) -> None:
     if time_series_df.empty:
         return
@@ -602,6 +622,7 @@ def export_prediction_artifacts(base_dir: Path, time_series_df: pd.DataFrame) ->
         keep_cols = [c for c in TIME_SERIES_COLS if c in ts_out.columns]
         ts_out = ts_out[keep_cols]
         ts_out.to_parquet(day_dir / "timeseries.parquet", index=False)
+        ts_out.to_parquet(day_dir / "visualization.parquet", index=False)
         ts_out.to_csv(day_dir / "timeseries.csv", index=False)
 
         pred_slice = ts_out[ts_out["p"].notna()].copy() if "p" in ts_out.columns else pd.DataFrame()
@@ -613,6 +634,7 @@ def export_prediction_artifacts(base_dir: Path, time_series_df: pd.DataFrame) ->
             "metrics": {k: _json_ready(v) for k, v in summarize_predictions(pred_slice).items()},
             "files": {
                 "timeseries_parquet": str(day_dir / "timeseries.parquet"),
+                "visualization_parquet": str(day_dir / "visualization.parquet"),
                 "timeseries_csv": str(day_dir / "timeseries.csv"),
             },
         }
@@ -644,6 +666,7 @@ def run_online_backtest(panels: list[pd.DataFrame], args: argparse.Namespace, ou
         panel["conf"] = np.nan
         panel["triggered"] = False
         panel["pred_sign"] = np.nan
+        panel["y"] = panel["y_3_5m_mean"]
         panel["true_sign"] = np.where(panel["y_3_5m_mean"] > 0, 1, np.where(panel["y_3_5m_mean"].notna(), -1, np.nan))
         panel["n_train_seen"] = np.nan
         file_name = str(panel["source_file"].iloc[0]) if not panel.empty else ""
@@ -682,8 +705,8 @@ def run_online_backtest(panels: list[pd.DataFrame], args: argparse.Namespace, ou
                 predictions.append(
                     {
                         "dt_exch": ts,
-                        "trade_date": pd.Timestamp(row.trade_date),
-                        "product": row.product,
+                        "trade_date": pd.Timestamp(row["trade_date"]),
+                        "product": row["product"],
                         "source_file": file_name,
                         "p": p,
                         "conf": conf,
@@ -708,6 +731,7 @@ def run_online_backtest(panels: list[pd.DataFrame], args: argparse.Namespace, ou
 
     pred_df = pd.DataFrame(predictions)
     time_series_df = pd.concat(time_series_panels, ignore_index=True) if time_series_panels else pd.DataFrame()
+    time_series_df = augment_visualization_frame(time_series_df)
     state.save(model_dir / "TA_model_latest.npz", latest_ts)
     return pred_df, time_series_df, {
         "overall": summarize_predictions(pred_df),
@@ -751,7 +775,7 @@ def load_panels(
 def main() -> None:
     args = parse_args()
     sessions = parse_trading_sessions(args.trading_sessions)
-    repo_root = Path(__file__).resolve().parents[4]
+    repo_root = Path(__file__).resolve().parents[3]
     input_dir = Path(args.input_dir)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

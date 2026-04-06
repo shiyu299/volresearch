@@ -1,8 +1,19 @@
 {
   "config": {
-    "input_dir": "data\\derived\\TA",
+    "input_dir": "/Users/shiyu/.openclaw/workspace/volresearch/data/derived/TA",
     "glob": "*.parquet",
     "atm_n": 15,
+    "trading_sessions": [
+      "21:00:00-23:00:00",
+      "09:00:00-10:15:00",
+      "10:30:00-11:30:00",
+      "13:30:00-15:00:00"
+    ],
+    "pool_refresh_seconds": 120,
+    "pool_refresh_fut_move": 0.0,
+    "min_train_minutes_after_open": 1.0,
+    "min_predict_minutes_after_open": 1.0,
+    "min_predict_minutes_before_close": 5.0,
     "conf_thr": 0.2,
     "min_train": 3600,
     "fit_steps": 120,
@@ -10,124 +21,171 @@
     "lr": 0.03,
     "l2": 0.001,
     "label": "mean(IV[t+3m:t+5m]) - IV[t]",
-    "train_gate": "exclude first 3 minutes after each 21:00 / 09:00 / 13:30 open",
-    "predict_gate": "predict only from 5 minutes after each 21:00 / 09:00 / 13:30 open",
+    "train_gate": "training rows must be inside configured trading sessions, at least min_train_minutes_after_open after session open, and have an in-session 3m-5m future label",
+    "predict_gate": "prediction rows must be inside configured trading sessions, at least min_predict_minutes_after_open after session open, more than min_predict_minutes_before_close before session close, and have an in-session 3m-5m future label",
     "warmup_policy": "first run requires min_train labeled samples; later days continue with persisted in-memory model",
-    "filter": "remove one-sided future seconds"
+    "filter": "remove one-sided future seconds",
+    "pool_rule": "ATM strike forced in, non-ATM OTM only, refresh by seconds or |ΔF|, 5min exit grace decay"
   },
   "metrics": {
-    "n": 154540,
-    "n_sig": 121731,
-    "all_hit": 0.5816164099909409,
-    "triggered_hit": 0.5985410454198191,
-    "coverage": 0.7876989776109745,
-    "avg_vol_decimal": 0.0044878898892870625,
-    "avg_vol_points": 0.4487889889287062
+    "n": 205985,
+    "n_sig": 164482,
+    "all_hit": 0.5650120154380174,
+    "triggered_hit": 0.5778808623435999,
+    "coverage": 0.798514454936039,
+    "avg_vol_decimal": 0.002715314010020915,
+    "avg_vol_points": 0.2715314010020915
   },
   "daily_metrics": [
     {
       "source_file": "TA605310.parquet",
       "trade_date": "2026-03-10",
-      "n": 15484,
-      "n_sig": 12158,
-      "all_hit": 0.6286489279256006,
-      "triggered_hit": 0.655453199539398,
-      "coverage": 0.7851976233531387,
-      "avg_vol_decimal": 0.013158374777771466,
-      "avg_vol_points": 1.3158374777771467
+      "n": 14843,
+      "n_sig": 11723,
+      "all_hit": 0.5808798760358418,
+      "triggered_hit": 0.580226904376013,
+      "coverage": 0.7897999056794448,
+      "avg_vol_decimal": 0.006285915144839193,
+      "avg_vol_points": 0.6285915144839194
     },
     {
       "source_file": "TA605311.parquet",
       "trade_date": "2026-03-11",
-      "n": 19398,
-      "n_sig": 14737,
-      "all_hit": 0.6184658212186823,
-      "triggered_hit": 0.6432109655967971,
-      "coverage": 0.7597174966491391,
-      "avg_vol_decimal": 0.007966031131305343,
-      "avg_vol_points": 0.7966031131305343
+      "n": 18833,
+      "n_sig": 15332,
+      "all_hit": 0.6107895714968407,
+      "triggered_hit": 0.6321419253848161,
+      "coverage": 0.8141029044761854,
+      "avg_vol_decimal": 0.005590597542299228,
+      "avg_vol_points": 0.5590597542299228
     },
     {
       "source_file": "TA605312.parquet",
       "trade_date": "2026-03-12",
-      "n": 10294,
-      "n_sig": 8067,
-      "all_hit": 0.41509617252768605,
-      "triggered_hit": 0.40622288335192763,
-      "coverage": 0.7836603846901108,
-      "avg_vol_decimal": -0.0025204627620492156,
-      "avg_vol_points": -0.25204627620492154
+      "n": 9987,
+      "n_sig": 8186,
+      "all_hit": 0.5006508460999299,
+      "triggered_hit": 0.49877840215001223,
+      "coverage": 0.8196655652348053,
+      "avg_vol_decimal": -0.0010605001738537949,
+      "avg_vol_points": -0.10605001738537949
     },
     {
       "source_file": "TA605313.parquet",
       "trade_date": "2026-03-13",
-      "n": 19401,
-      "n_sig": 15827,
-      "all_hit": 0.5227050152054018,
-      "triggered_hit": 0.5253048587856195,
-      "coverage": 0.8157826916138343,
-      "avg_vol_decimal": 0.0003212060844944161,
-      "avg_vol_points": 0.03212060844944161
+      "n": 18866,
+      "n_sig": 15267,
+      "all_hit": 0.5347715466977632,
+      "triggered_hit": 0.5316696142005634,
+      "coverage": 0.8092335418212657,
+      "avg_vol_decimal": 0.0011671080016743465,
+      "avg_vol_points": 0.11671080016743465
     },
     {
       "source_file": "TA605316.parquet",
       "trade_date": "2026-03-16",
-      "n": 12512,
-      "n_sig": 9383,
-      "all_hit": 0.527093989769821,
-      "triggered_hit": 0.5290418842587659,
-      "coverage": 0.7499200767263428,
-      "avg_vol_decimal": 0.0014329963438344162,
-      "avg_vol_points": 0.14329963438344162
+      "n": 12029,
+      "n_sig": 9518,
+      "all_hit": 0.50178734724416,
+      "triggered_hit": 0.5061987812565665,
+      "coverage": 0.7912544683681104,
+      "avg_vol_decimal": 0.0006289041428477106,
+      "avg_vol_points": 0.06289041428477106
     },
     {
       "source_file": "TA605317.parquet",
       "trade_date": "2026-03-17",
-      "n": 19343,
-      "n_sig": 15014,
-      "all_hit": 0.572248358579331,
-      "triggered_hit": 0.5946449980018649,
-      "coverage": 0.7761981078426304,
-      "avg_vol_decimal": 0.004047777240789818,
-      "avg_vol_points": 0.40477772407898177
+      "n": 18748,
+      "n_sig": 14402,
+      "all_hit": 0.5682739492212503,
+      "triggered_hit": 0.5849187612831551,
+      "coverage": 0.7681886067847237,
+      "avg_vol_decimal": 0.0027940311621131673,
+      "avg_vol_points": 0.27940311621131675
     },
     {
       "source_file": "TA605318.parquet",
       "trade_date": "2026-03-18",
-      "n": 19400,
-      "n_sig": 14937,
-      "all_hit": 0.5954639175257732,
-      "triggered_hit": 0.6127736493271742,
-      "coverage": 0.7699484536082474,
-      "avg_vol_decimal": 0.0029077232446328566,
-      "avg_vol_points": 0.29077232446328566
+      "n": 18822,
+      "n_sig": 15084,
+      "all_hit": 0.5738497502922112,
+      "triggered_hit": 0.58001856271546,
+      "coverage": 0.8014026139623844,
+      "avg_vol_decimal": 0.0018217242847893213,
+      "avg_vol_points": 0.18217242847893214
     },
     {
       "source_file": "TA605319.parquet",
       "trade_date": "2026-03-19",
-      "n": 19341,
-      "n_sig": 15581,
-      "all_hit": 0.572669458662944,
-      "triggered_hit": 0.5821192478018099,
-      "coverage": 0.8055943332816297,
-      "avg_vol_decimal": 0.003984299613064625,
-      "avg_vol_points": 0.3984299613064625
+      "n": 18748,
+      "n_sig": 15661,
+      "all_hit": 0.565500320034137,
+      "triggered_hit": 0.586297171317285,
+      "coverage": 0.8353424365265628,
+      "avg_vol_decimal": 0.002914526153243832,
+      "avg_vol_points": 0.2914526153243832
     },
     {
       "source_file": "TA605320.parquet",
       "trade_date": "2026-03-20",
-      "n": 19367,
-      "n_sig": 16027,
-      "all_hit": 0.6942737646512108,
-      "triggered_hit": 0.7304548574280901,
-      "coverage": 0.8275416946352042,
-      "avg_vol_decimal": 0.00651763153560313,
-      "avg_vol_points": 0.651763153560313
+      "n": 18813,
+      "n_sig": 14425,
+      "all_hit": 0.5947483123372136,
+      "triggered_hit": 0.6220450606585789,
+      "coverage": 0.766757029713496,
+      "avg_vol_decimal": 0.003481798708859576,
+      "avg_vol_points": 0.3481798708859576
+    },
+    {
+      "source_file": "TA605323.parquet",
+      "trade_date": "2026-03-21",
+      "n": 6430,
+      "n_sig": 5329,
+      "all_hit": 0.5836702954898911,
+      "triggered_hit": 0.6027397260273972,
+      "coverage": 0.8287713841368585,
+      "avg_vol_decimal": 0.002981730368515242,
+      "avg_vol_points": 0.2981730368515242
+    },
+    {
+      "source_file": "TA605323.parquet",
+      "trade_date": "2026-03-23",
+      "n": 12364,
+      "n_sig": 9360,
+      "all_hit": 0.47007440957618896,
+      "triggered_hit": 0.46495726495726497,
+      "coverage": 0.7570365577483015,
+      "avg_vol_decimal": 9.70837774799263e-05,
+      "avg_vol_points": 0.00970837774799263
+    },
+    {
+      "source_file": "TA605324.parquet",
+      "trade_date": "2026-03-24",
+      "n": 18786,
+      "n_sig": 14902,
+      "all_hit": 0.5688810816565527,
+      "triggered_hit": 0.5887129244396725,
+      "coverage": 0.7932502927712126,
+      "avg_vol_decimal": 0.002615842759872308,
+      "avg_vol_points": 0.26158427598723083
+    },
+    {
+      "source_file": "TA605325.parquet",
+      "trade_date": "2026-03-25",
+      "n": 18716,
+      "n_sig": 15293,
+      "all_hit": 0.6217140414618508,
+      "triggered_hit": 0.6456548747793108,
+      "coverage": 0.8171083564864288,
+      "avg_vol_decimal": 0.003447659759128028,
+      "avg_vol_points": 0.3447659759128028
     }
   ],
   "artifacts": {
-    "predictions": "iv_vega_hf\\v1.5\\output\\ta_full\\ta_v15_predictions.parquet",
-    "daily_summary": "iv_vega_hf\\v1.5\\output\\ta_full\\ta_v15_daily_summary.parquet",
-    "models_dir": "iv_vega_hf\\v1.5\\output\\ta_full\\models"
+    "predictions": "/Users/shiyu/.openclaw/workspace/volresearch/iv_vega_hf/v1.5/output/ta_full/ta_v15_predictions.parquet",
+    "daily_summary": "/Users/shiyu/.openclaw/workspace/volresearch/iv_vega_hf/v1.5/output/ta_full/ta_v15_daily_summary.parquet",
+    "time_series": "/Users/shiyu/.openclaw/workspace/volresearch/iv_vega_hf/v1.5/output/ta_full/ta_v15_timeseries.parquet",
+    "prediction_export_root": "/Users/shiyu/.openclaw/workspace/volresearch/data/prediction/logistic",
+    "models_dir": "/Users/shiyu/.openclaw/workspace/volresearch/iv_vega_hf/v1.5/output/ta_full/models"
   }
 }
